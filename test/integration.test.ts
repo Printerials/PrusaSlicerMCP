@@ -4,7 +4,7 @@
  * temporary directory; the GUI is not touched (open_in_prusaslicer is left out on purpose).
  */
 import assert from "node:assert/strict";
-import { chmod, copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,8 +65,10 @@ describe("against the installed PrusaSlicer", { skip }, () => {
     assert.deepEqual(names, [
       "describe_setting",
       "export_model",
+      "find_profiles",
       "gcode_info",
       "get_config",
+      "install_profiles",
       "list_printers",
       "list_profiles",
       "model_info",
@@ -185,6 +187,56 @@ describe("against the installed PrusaSlicer", { skip }, () => {
     const allowed = await call("slice", { inputs: [join(dir, "project.3mf")], output: join(dir, "project2.gcode"), allow_post_process: true });
     assert.equal(allowed.isError, false, allowed.text);
     assert.equal(existsSync(marker), true, "allow_post_process did not run the script");
+  });
+
+  test("find and install a profile, on a copy of the datadir", async (t) => {
+    const status = await call("slicer_status");
+    const datadir: string | null = status.data.slicer.datadir;
+    if (!datadir || !printer) return t.skip("no datadir or no printer selected");
+
+    // A second server on a copy: the real datadir and the GUI are not touched.
+    const copy = join(dir, "datadir");
+    await cp(datadir, copy, { recursive: true, filter: (source) => !source.endsWith(".lock") });
+    const other = new Client({ name: "integration-test-copy", version: "0" });
+    await other.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: [join(root, "src", "index.ts")],
+        stderr: "ignore",
+        cwd: root,
+        env: { ...(process.env as Record<string, string>), PRUSASLICER_DATADIR: copy },
+      }),
+    );
+    const callCopy = async (name: string, args: Record<string, unknown>) => {
+      const result = await other.callTool({ name, arguments: args });
+      const text = (result.content as Array<{ type: string; text?: string }>).map((part) => part.text ?? "").join("\n");
+      return { isError: Boolean(result.isError), text, data: result.isError ? null : JSON.parse(text) };
+    };
+    try {
+      const found = await callCopy("find_profiles", { kind: "filament", printer, only_not_installed: true, limit: 1 });
+      assert.equal(found.isError, false, found.text);
+      const candidate: string | undefined = found.data.matches[0]?.name;
+      if (!candidate) return t.skip("every fitting filament is installed already");
+
+      const refused = await callCopy("get_config", { printer, filament: candidate, print: prints[0] });
+      assert.equal(refused.isError, true);
+      assert.match(refused.text, /not installed/);
+
+      const dry = await callCopy("install_profiles", { install: [candidate], dry_run: true });
+      assert.deepEqual(dry.data.installed, [candidate]);
+
+      const done = await callCopy("install_profiles", { install: [candidate] });
+      assert.equal(done.isError, false, done.text);
+      assert.match(done.data.verified[candidate], /^listed for /);
+      const listed = await callCopy("list_profiles", { printer, filter: candidate });
+      assert.ok(JSON.stringify(listed.data).includes(candidate));
+
+      const removed = await callCopy("install_profiles", { uninstall: [candidate] });
+      assert.deepEqual(removed.data.uninstalled, [candidate]);
+      assert.equal(existsSync(join(copy, "PrusaSlicer.ini.mcp-backup")), true);
+    } finally {
+      await other.close();
+    }
   });
 
   test("model_info and export_model", async () => {

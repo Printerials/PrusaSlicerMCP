@@ -56,6 +56,8 @@ Claude Desktop (`claude_desktop_config.json`):
 | `list_profiles` | Print and filament profiles compatible with a printer, as PrusaSlicer decides |
 | `get_config` | The resolved config of a printer/print/filament set, or the diff between two sets |
 | `describe_setting` | Type, unit, allowed values, default and description of a setting, or a search over all of them |
+| `find_profiles` | Official filament and printer profiles in the installed bundles, also the ones not enabled yet; filament compatibility as PrusaSlicer evaluates it |
+| `install_profiles` | Enable or disable those profiles, as the Configuration Wizard does (PrusaSlicer must be closed; dry_run and a backup) |
 | `slice` | Slice to G-code with presets, a project's config or the GUI selection, plus overrides and transforms |
 | `model_info` | PrusaSlicer's mesh analysis: size, volume, facets, parts, manifold |
 | `project_info` | A 3MF's presets, settings it changes, per-object and per-range settings, colour changes, thumbnail |
@@ -74,6 +76,10 @@ These were verified against PrusaSlicer 2.9.7 on macOS, and the server is built 
 - **An incomplete or unknown preset set crashes PrusaSlicer 2.9.** That means printer only, printer plus print, or an unknown printer name, and the result is a segfault (exit 139).
   - The server therefore checks every preset name against PrusaSlicer's own listing first, and always passes all three.
   - A wrong name is refused with the closest matches.
+- **A profile that cannot be used is silently replaced.** A filament that is not installed is replaced by the one selected in the GUI, with exit 0. So is one that does not fit.
+  - The server checks names before the run.
+  - It compares the `*_settings_id` of the resolved config and of the G-code with what was asked.
+  - A filament that exists but is not installed is refused with a pointer to `install_profiles`.
 - **Exit codes are not trusted.** "All objects are outside of the print volume" exits with 0. A run counts as successful when its output file exists; otherwise PrusaSlicer's message is returned.
 - **An empty `--key=` takes the next argument as its value.** `--post-process=` followed by a model path makes the model the script. Empty values go as two arguments (`--key ""`), others as `--key=value`, so negative numbers do not pass for options.
 - **Post-processing scripts are off by default.**
@@ -83,6 +89,11 @@ These were verified against PrusaSlicer 2.9.7 on macOS, and the server is built 
 - **Output is staged.**
   - PrusaSlicer writes into a scratch directory next to the destination, and the result is renamed into place.
   - Without an explicit output name, the file keeps the name PrusaSlicer derives from `output_filename_format`, with a `-2` suffix and so on when that name is taken.
+- **Installed profiles live in `PrusaSlicer.ini`:** `[filaments]` (`name = 1`) and `[vendor:<id>]` (`model:<ID> = <variants>`), as the Configuration Wizard writes them.
+  - Variants with spaces must be quoted (`"HT Hotend 0.4"`), or PrusaSlicer drops the model.
+  - A duplicate key makes it reject the whole file as corrupt.
+  - The GUI keeps this in memory and writes it back on quitting. So `install_profiles` refuses while PrusaSlicer runs on the same data directory.
+  - `find_profiles` lets PrusaSlicer judge compatibility, by querying a scratch copy of the data directory with everything enabled.
 - **The CLI's 3MF export holds no print settings**, and the CLI embeds no thumbnails (it renders none).
 
 ## PrusaSlicer 3.0

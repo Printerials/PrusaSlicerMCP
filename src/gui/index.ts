@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { basename, extname } from "node:path";
 import type { LocatedBinary } from "../slicer/locate.ts";
+import { activePids } from "../slicer/run.ts";
 import * as darwin from "./darwin.ts";
 import * as win32 from "./win32.ts";
 
@@ -29,6 +30,29 @@ export async function windowState(): Promise<WindowState> {
 function isRunningPosix(): Promise<boolean> {
   return new Promise((resolve) => {
     execFile("pgrep", ["-f", "prusa-slicer|PrusaSlicer"], { timeout: 3000 }, (error, stdout) => resolve(!error && stdout.trim() !== ""));
+  });
+}
+
+/**
+ * Whether the PrusaSlicer GUI runs, from the process list (no Screen Recording permission needed).
+ * The CLI runs of this server are left out; on Windows the GUI is prusa-slicer.exe and the CLI
+ * prusa-slicer-console.exe. Null when the process list cannot be read.
+ */
+export function isGuiRunning(): Promise<boolean | null> {
+  return new Promise((resolve) => {
+    if (process.platform === "win32") {
+      execFile("tasklist", ["/FI", "IMAGENAME eq prusa-slicer.exe", "/NH", "/FO", "CSV"], { timeout: 5000, windowsHide: true }, (error, stdout) =>
+        resolve(error ? null : /prusa-slicer\.exe/i.test(stdout)),
+      );
+      return;
+    }
+    const args = process.platform === "darwin" ? ["-x", "PrusaSlicer"] : ["-f", "prusa-slicer|PrusaSlicer"];
+    execFile("pgrep", args, { timeout: 5000 }, (error, stdout) => {
+      // pgrep exits with 1 when nothing matches.
+      if (error && (error as NodeJS.ErrnoException & { code?: number }).code !== 1) return resolve(null);
+      const pids = stdout.split(/\s+/).filter(Boolean).map(Number).filter((pid) => pid !== process.pid && !activePids.has(pid));
+      resolve(pids.length > 0);
+    });
   });
 }
 

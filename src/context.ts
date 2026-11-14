@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { copyFile, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import { parseHelp, parseHelpFff, type HelpInfo, type SettingInfo } from "./formats/help.ts";
-import { parseIniConfig, type FlatConfig } from "./formats/ini.ts";
+import { parseIniConfig, splitList, unescapeValue, type FlatConfig } from "./formats/ini.ts";
 import type { AppState, Backend, ProfilesListing } from "./slicer/backend.ts";
 import { EMPTY_APP_STATE } from "./slicer/backend.ts";
+import { parseInstalled, readBundles, writeInstalled, type Bundle, type Installed } from "./slicer/installed.ts";
 import { locateSlicer, type LocatedBinary } from "./slicer/locate.ts";
 import { SerialQueue } from "./slicer/queue.ts";
 import { describeFailure, runSlicer, type RunOptions, type RunResult } from "./slicer/run.ts";
@@ -94,10 +95,11 @@ export class SlicerContext {
   }
 
   /** Runs PrusaSlicer with the configured datadir and a quiet log level unless the caller sets one. */
-  async run(args: string[], options: RunOptions = {}): Promise<RunResult> {
+  async run(args: string[], options: RunOptions & { datadir?: string } = {}): Promise<RunResult> {
     const info = await this.info();
     const full = [...args];
-    if (info.datadirExplicit && info.datadir) full.unshift("--datadir", info.datadir);
+    if (options.datadir) full.unshift("--datadir", options.datadir);
+    else if (info.datadirExplicit && info.datadir) full.unshift("--datadir", info.datadir);
     if (!full.includes("--loglevel")) full.push("--loglevel", "1");
     return runSlicer(info.binary.path, full, { timeoutMs: QUERY_TIMEOUT, ...options });
   }
@@ -111,6 +113,11 @@ export class SlicerContext {
     } catch {
       throw new Refusal(`${what}: PrusaSlicer returned output that is not JSON.\n${result.stdout.slice(0, 500)}`);
     }
+  }
+
+  /** After the installed profiles change: every listing and resolved config may differ. */
+  invalidate(): void {
+    this.caches.clear();
   }
 
   private cached<T>(key: string, load: () => Promise<T>): Promise<T> {
@@ -204,6 +211,10 @@ export class SlicerContext {
     if (!partial.printer) filledIn.push("printer");
     const printers = await this.printerNames();
     if (!printers.includes(printer)) {
+      const available: string[] = await this.availablePrinterNames().catch(() => []);
+      if (available.includes(printer)) {
+        throw new Refusal(`Printer preset "${printer}" exists in PrusaSlicer's bundles but is not installed. install_profiles can enable it.`);
+      }
       throw new Refusal(`Printer preset "${printer}" is not installed.`, { did_you_mean: suggest(printer, printers) });
     }
 
@@ -235,11 +246,110 @@ export class SlicerContext {
       }
     }
     if (!printEntry.filaments.includes(filament)) {
+      const bundles: Bundle[] = await this.bundles().catch(() => []);
+      if (bundles.some((bundle) => bundle.filaments.has(filament))) {
+        // Not installed, PrusaSlicer would silently slice with the selected filament instead.
+        throw new Refusal(
+          `Filament profile "${filament}" is an official profile, but it is not installed. ` +
+            `find_profiles shows whether it fits ${printer}; install_profiles enables it.`,
+        );
+      }
       throw new Refusal(`Filament profile "${filament}" is not compatible with "${print}" on ${printer}, or does not exist.`, {
         did_you_mean: suggest(filament, printEntry.filaments),
       });
     }
     return { printer, print, filament, filledIn };
+  }
+
+  // ─── Installed profiles (what the Configuration Wizard manages) ───
+
+  /** The vendor bundles in the datadir. 2.x only: 3.0 stores presets differently. */
+  async bundles(): Promise<Bundle[]> {
+    const info = await this.info();
+    if (info.backend.major >= 3) throw new Refusal("Managing installed profiles is supported for PrusaSlicer 2.x only, so far.");
+    if (!info.datadir) throw new Refusal("PrusaSlicer's data directory was not found. Start PrusaSlicer once to create it.");
+    return readBundles(info.datadir);
+  }
+
+  async installedProfiles(): Promise<{ path: string; text: string; installed: Installed }> {
+    const info = await this.info();
+    if (!info.datadir) throw new Refusal("PrusaSlicer's data directory was not found. Start PrusaSlicer once to create it.");
+    const path = join(info.datadir, "PrusaSlicer.ini");
+    if (!existsSync(path)) throw new Refusal(`${path} does not exist. Start PrusaSlicer once and finish the Configuration Wizard.`);
+    const text = await readFile(path, "utf8");
+    return { path, text, installed: parseInstalled(text) };
+  }
+
+  /** True when the GUI would use this datadir: PrusaSlicer's default one. */
+  async datadirIsTheGuis(): Promise<boolean> {
+    const info = await this.info();
+    const standard = info.backend.defaultDatadir();
+    return !info.datadir || !standard || resolvePath(info.datadir) === resolvePath(standard);
+  }
+
+  /**
+   * Runs fn against a scratch copy of the datadir in which every profile of every installed bundle
+   * is enabled, so PrusaSlicer itself says what exists and what fits which printer. The real
+   * datadir is only read.
+   */
+  private async withEverythingInstalled<T>(fn: (datadir: string) => Promise<T>): Promise<T> {
+    const info = await this.info();
+    const bundles = await this.bundles();
+    const { text } = await this.installedProfiles();
+    const dir = await mkdtemp(join(tmpdir(), "prusaslicer-mcp-all-"));
+    try {
+      await mkdir(join(dir, "vendor"));
+      for (const bundle of bundles) {
+        await copyFile(join(info.datadir!, "vendor", `${bundle.vendorId}.ini`), join(dir, "vendor", `${bundle.vendorId}.ini`));
+      }
+      for (const kind of ["printer", "print", "filament", "physical_printer"]) {
+        const source = join(info.datadir!, kind);
+        if (existsSync(source)) await cp(source, join(dir, kind), { recursive: true });
+      }
+      const everything: Installed = { filaments: new Set(bundles.flatMap((bundle) => [...bundle.filaments])), vendors: new Map() };
+      for (const bundle of bundles) {
+        const models = new Map<string, string[]>();
+        for (const model of bundle.models.values()) if (model.variants.length) models.set(model.id, model.variants);
+        if (models.size) everything.vendors.set(bundle.vendorId, models);
+      }
+      await writeFile(join(dir, "PrusaSlicer.ini"), writeInstalled(text, everything));
+      return await fn(dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  /** Every printer model the installed bundles offer, installed or not. */
+  availablePrinters(technology: "FFF" | "SLA" = "FFF"): Promise<PrinterModel[]> {
+    return this.cached(`available-models:${technology}`, () =>
+      this.withEverythingInstalled(async (datadir) => {
+        const args = ["--query-printer-models", ...(technology === "SLA" ? ["--printer-technology", "SLA"] : [])];
+        const result = await this.run(args, { datadir });
+        const start = result.stdout.indexOf("{");
+        if (start === -1) throw new Refusal(describeFailure(result, "Listing available printers"));
+        const data = JSON.parse(result.stdout.slice(start)) as { printer_models?: RawModel[] };
+        return (data.printer_models ?? []).map(normalizeModel);
+      }),
+    );
+  }
+
+  async availablePrinterNames(): Promise<string[]> {
+    const models = await this.availablePrinters("FFF");
+    return models.flatMap((model) => model.variants.flatMap((variant) => variant.profiles.map((profile) => profile.name)));
+  }
+
+  /** Every filament that fits a printer, installed or not, as PrusaSlicer evaluates compatibility. */
+  availableFilaments(printer: string): Promise<string[]> {
+    return this.cached(`available-filaments:${printer}`, () =>
+      this.withEverythingInstalled(async (datadir) => {
+        const info = await this.info();
+        const result = await this.run(info.backend.profilesQueryArgs(printer), { datadir });
+        const start = result.stdout.indexOf("{");
+        if (start === -1) throw new Refusal(describeFailure(result, `Listing filaments for ${printer}`));
+        const listing = info.backend.parseProfilesQuery(JSON.parse(result.stdout.slice(start)));
+        return [...new Set(listing.prints.flatMap((print) => print.filaments))].sort();
+      }),
+    );
   }
 
   presetArgs(presets: Presets): string[] {
@@ -255,11 +365,34 @@ export class SlicerContext {
         const out = join(dir, info.backend.major >= 3 ? "config.json" : "config.ini");
         const result = await this.run([...this.presetArgs(presets), ...info.backend.saveConfigArgs(out)]);
         if (!existsSync(out)) throw new Refusal(describeFailure(result, "Resolving the presets"));
-        return info.backend.parseSavedConfig(await readFile(out, "utf8"));
+        const config = info.backend.parseSavedConfig(await readFile(out, "utf8"));
+        assertPresetsUsed(config, presets, info.backend);
+        return config;
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
     });
+  }
+}
+
+/**
+ * PrusaSlicer 2.9 replaces a preset it cannot use (not installed, not compatible) by the one
+ * selected in the GUI, without a word and with exit code 0. The ids in the result say what it used.
+ */
+export function assertPresetsUsed(config: FlatConfig, presets: Presets, backend: Backend): void {
+  const keys = backend.presetIdKeys;
+  const used = {
+    printer: config.has(keys.printer) ? unescapeValue(config.get(keys.printer)!) : undefined,
+    print: config.has(keys.print) ? unescapeValue(config.get(keys.print)!) : undefined,
+    filament: config.has(keys.filament) ? splitList(config.get(keys.filament)!)[0] : undefined,
+  };
+  for (const kind of ["printer", "print", "filament"] as const) {
+    const value = used[kind];
+    if (value !== undefined && value !== presets[kind]) {
+      throw new Refusal(
+        `PrusaSlicer used the ${kind} preset "${value}" instead of "${presets[kind]}": the requested one is not installed or does not fit.`,
+      );
+    }
   }
 }
 

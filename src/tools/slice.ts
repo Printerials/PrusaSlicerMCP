@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, stat, unlink } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { z } from "zod";
 import { readGcode } from "../formats/gcode.ts";
@@ -57,9 +57,11 @@ export function registerSlice(server: McpServer, { slicer }: ToolDeps): void {
 
       let presetArgs: string[] = [];
       let presets: Record<string, unknown>;
+      let requested: { printer: string; print: string; filament: string } | null = null;
       if (explicit || !project) {
         const chosen = await slicer.completePresets({ printer: args.printer, print: args.print, filament: args.filament });
         presetArgs = slicer.presetArgs(chosen);
+        requested = chosen;
         presets = {
           source: explicit ? "arguments" : "prusaslicer_selection",
           printer: chosen.printer,
@@ -134,6 +136,17 @@ export function registerSlice(server: McpServer, { slicer }: ToolDeps): void {
       });
 
       const { report } = await readGcode(result.final);
+      // PrusaSlicer 2.9 silently slices with the GUI's selection when a preset cannot be used.
+      if (requested) {
+        const used = { printer: report.presets.printer, print: report.presets.print, filament: report.presets.filament[0] ?? null };
+        const wrong = (["printer", "print", "filament"] as const).filter((kind) => used[kind] !== null && used[kind] !== requested![kind]);
+        if (wrong.length) {
+          await unlink(result.final).catch(() => undefined);
+          throw new Refusal(
+            `PrusaSlicer sliced with other presets than asked (${wrong.map((kind) => `${kind}: "${used[kind]}" instead of "${requested![kind]}"`).join("; ")}). The G-code was removed.`,
+          );
+        }
+      }
       const messages = result.run.stderr
         .split(/\r?\n/)
         .map((line) => line.trim())

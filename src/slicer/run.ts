@@ -19,6 +19,9 @@ export interface RunResult {
 }
 
 const MAX_OUTPUT = 32 * 1024 * 1024;
+
+/** PIDs of the PrusaSlicer processes this server runs, so a check for the GUI can leave them out. */
+export const activePids = new Set<number>();
 const PROGRESS_LINE = /^(\d{1,3}) => (.+)$/;
 
 /**
@@ -29,6 +32,8 @@ const PROGRESS_LINE = /^(\d{1,3}) => (.+)$/;
 export function runSlicer(binary: string, args: string[], options: RunOptions = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const pid = child.pid;
+    if (pid !== undefined) activePids.add(pid);
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let outSize = 0;
@@ -76,11 +81,13 @@ export function runSlicer(binary: string, args: string[], options: RunOptions = 
     });
 
     child.on("error", (error) => {
+      if (pid !== undefined) activePids.delete(pid);
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", onAbort);
       reject(error);
     });
     child.on("close", (exitCode, signal) => {
+      if (pid !== undefined) activePids.delete(pid);
       clearTimeout(timer);
       clearTimeout(killTimer);
       options.signal?.removeEventListener("abort", onAbort);
