@@ -1,0 +1,33 @@
+{
+  "name": "prusaslicer-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for PrusaSlicer: profiles, slicing, G-code analysis and the running GUI, with PrusaSlicer as the source of truth",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "prusaslicer-mcp": "./build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node build/index.js",
+    "dev": "node src/index.ts",
+    "test": "node --test 'test/unit/*.test.ts'",
+    "test:integration": "node --test test/integration.test.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}

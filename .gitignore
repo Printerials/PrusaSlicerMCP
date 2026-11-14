@@ -1,0 +1,6 @@
+node_modules/
+build/
+prusaslicer/
+.DS_Store
+*.log
+*.local.ts
