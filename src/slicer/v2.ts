@@ -27,10 +27,17 @@ export const v2Backend: Backend = {
   },
 
   parseProfilesQuery(json) {
-    const data = json as { printer_profile?: string; print_profiles?: Array<{ name: string; filament_profiles?: string[] }> };
+    // User filament presets come in a list of their own, user_filament_profiles (seen with 2.9.7).
+    const data = json as {
+      printer_profile?: string;
+      print_profiles?: Array<{ name: string; filament_profiles?: string[]; user_filament_profiles?: string[] }>;
+    };
     const listing: ProfilesListing = {
       printer: data.printer_profile ?? "",
-      prints: (data.print_profiles ?? []).map((print) => ({ name: print.name, filaments: print.filament_profiles ?? [] })),
+      prints: (data.print_profiles ?? []).map((print) => ({
+        name: print.name,
+        filaments: [...(print.filament_profiles ?? []), ...(print.user_filament_profiles ?? [])],
+      })),
     };
     return listing;
   },

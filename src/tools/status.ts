@@ -1,9 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { matchRecentProjects, parseWindowTitle, windowState } from "../gui/index.ts";
+import { SpoolmanClient } from "../spoolman/client.ts";
 import { json, READ_ONLY, tool, type ToolDeps } from "./common.ts";
 
-export function registerStatus(server: McpServer, { slicer }: ToolDeps): void {
+export function registerStatus(server: McpServer, { slicer, account }: ToolDeps): void {
   tool(
     server,
     "slicer_status",
@@ -11,13 +12,18 @@ export function registerStatus(server: McpServer, { slicer }: ToolDeps): void {
       title: "PrusaSlicer status",
       description:
         "Start here. Which PrusaSlicer is installed (path, version, data directory), the printer/print/filament presets currently selected in it, " +
-        "recent projects, and whether the GUI is running with which project open (and unsaved changes).",
+        "recent projects, whether the GUI is running with which project open (and unsaved changes), and where spools come from (Printerials account or Spoolman).",
       inputSchema: z.object({}),
       annotations: READ_ONLY,
     },
     async () => {
       const info = await slicer.info();
-      const [state, window, physical] = await Promise.all([slicer.appState(), windowState(), slicer.userPresets("physical_printer")]);
+      const [state, window, physical, printerials] = await Promise.all([
+        slicer.appState(),
+        windowState(),
+        slicer.userPresets("physical_printer"),
+        account.state().catch((error: unknown) => ({ status: "unknown", problem: error instanceof Error ? error.message : String(error) })),
+      ]);
 
       let project: { name: string | null; path: string | null; unsaved: boolean } | null = null;
       if (window.title) {
@@ -43,6 +49,16 @@ export function registerStatus(server: McpServer, { slicer }: ToolDeps): void {
           project,
           note: window.note,
         },
+        printerials: { account: account.host, ...printerials },
+        spoolman: (() => {
+          try {
+            const client = SpoolmanClient.fromEnv();
+            if (client) return { configured: true, host: client.host, via: client.via };
+            return printerials.status === "connected" ? { configured: true, host: account.host, via: "Printerials account" } : { configured: false };
+          } catch (error) {
+            return { configured: false, problem: error instanceof Error ? error.message : String(error) };
+          }
+        })(),
         queue: { slices_waiting: slicer.sliceQueue.pending },
       });
     },

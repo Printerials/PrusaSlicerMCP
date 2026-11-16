@@ -75,7 +75,8 @@ export class ZipReader {
     const { entry, data } = raw;
     if (entry.size > MAX_ENTRY) throw new Error(`${name} is too large to read (${entry.size} bytes).`);
     if (entry.method === 0) return data;
-    if (entry.method === 8) return inflateRawSync(data);
+    // The declared size is the file's claim: the limit holds for what actually inflates.
+    if (entry.method === 8) return inflateRawSync(data, { maxOutputLength: MAX_ENTRY });
     throw new Error(`${name} uses ZIP compression method ${entry.method}, which is not supported.`);
   }
 

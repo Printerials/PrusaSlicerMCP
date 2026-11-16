@@ -4,9 +4,12 @@ import { basename, dirname, extname, join } from "node:path";
 import { z } from "zod";
 import { readGcode } from "../formats/gcode.ts";
 import { readProject } from "../formats/threemf.ts";
+import { splitList } from "../formats/ini.ts";
+import { spoolLabel, spoolPricePerKg } from "../spoolman/client.ts";
+import { spoolman } from "./filament.ts";
 import { describeFailure } from "../slicer/run.ts";
 import { Refusal } from "../util/errors.ts";
-import { commitFile, exists, expandHome, outputTarget, requireFile, withStaging } from "../util/paths.ts";
+import { commitFile, exists, expandHome, outputTarget, requireFile, stem, withStaging } from "../util/paths.ts";
 import { overrideArgs, overridesSchema, transformArgs, transformsSchema } from "./args.ts";
 import { json, progressReporter, tool, WRITES_NEW_FILES, type ToolDeps } from "./common.ts";
 
@@ -15,7 +18,7 @@ export const MODEL_EXTENSIONS = [".stl", ".3mf", ".obj", ".step", ".stp", ".amf"
 /** PrusaSlicer's console noise that says nothing about the print. */
 const NOISE = /^(\d{1,3} => |Slicing result exported|File exported|PrusaSlicer-\d)/;
 
-export function registerSlice(server: McpServer, { slicer }: ToolDeps): void {
+export function registerSlice(server: McpServer, { slicer, account }: ToolDeps): void {
   tool(
     server,
     "slice",
@@ -42,6 +45,7 @@ export function registerSlice(server: McpServer, { slicer }: ToolDeps): void {
           .describe("Absolute output file (.gcode/.bgcode) or existing directory. Default: next to the first input, named by the preset's output_filename_format."),
         overwrite: z.boolean().default(false),
         allow_post_process: z.boolean().default(false).describe("Run the post_process scripts the presets or the project define."),
+        spool_id: z.number().int().optional().describe("A spool (list_spools) to print from: checks that enough is left on it and prices the print at what it cost."),
       }),
       annotations: WRITES_NEW_FILES,
     },
@@ -56,6 +60,7 @@ export function registerSlice(server: McpServer, { slicer }: ToolDeps): void {
       const project = projects.find((p) => p && (p.kind === "prusaslicer-2" || p.kind === "prusaslicer-3") && p.config.size > 0) ?? null;
 
       let presetArgs: string[] = [];
+      let projectStem: string | null = null;
       let presets: Record<string, unknown>;
       let requested: { printer: string; print: string; filament: string } | null = null;
       if (explicit || !project) {
@@ -71,6 +76,12 @@ export function registerSlice(server: McpServer, { slicer }: ToolDeps): void {
         };
       } else {
         presets = { source: "project", printer: project.presets.printer, print: project.presets.print, filament: project.presets.filament };
+        // A project's own output_filename_format is the file's, not the user's: PrusaSlicer 2.9.7
+        // follows "../" in it out of the output directory and replaces whatever file is there.
+        // A fixed name instead, without placeholders (PrusaSlicer turns .gcode into .bgcode itself);
+        // the result is named after the project file below.
+        presetArgs = ["--output-filename-format", "project.gcode"];
+        projectStem = stem(inputs[0]!);
       }
 
       const catalog = await slicer.catalog();
@@ -126,11 +137,8 @@ export function registerSlice(server: McpServer, { slicer }: ToolDeps): void {
         const produced = (await readdir(staging)).filter((name) => /\.b?gcode$/i.test(name));
         if (produced.length === 0) throw new Refusal(describeFailure(run, "Slicing"));
         const staged = join(staging, produced[0]!);
-        const final = fileName
-          ? join(destDir, fileName)
-          : args.overwrite
-            ? join(destDir, produced[0]!)
-            : await freeName(destDir, produced[0]!);
+        const name = projectStem ? `${projectStem}${extname(produced[0]!)}` : produced[0]!;
+        const final = fileName ? join(destDir, fileName) : args.overwrite ? join(destDir, name) : await freeName(destDir, name);
         await commitFile(staged, final, args.overwrite);
         return { final, run };
       });
@@ -152,6 +160,29 @@ export function registerSlice(server: McpServer, { slicer }: ToolDeps): void {
         .map((line) => line.trim())
         .filter((line) => line && !NOISE.test(line))
         .slice(0, 30);
+      let spool: Record<string, unknown> | undefined;
+      if (args.spool_id !== undefined) {
+        const found = await (await spoolman(account)).getSpool(args.spool_id);
+        const needed = report.filament.total_g;
+        const left = found.remaining_weight;
+        const perKg = spoolPricePerKg(found);
+        spool = {
+          id: found.id,
+          filament: spoolLabel(found),
+          remaining_g: left !== undefined ? Math.round(left) : null,
+          needed_g: needed,
+          enough: needed !== null && left !== undefined ? left >= needed : null,
+          cost_at_spool_price: perKg !== undefined && needed !== null ? Math.round(((perKg * needed) / 1000) * 100) / 100 : null,
+        };
+        if (spool.enough === false) messages.unshift(`Spool ${found.id} (${spoolLabel(found)}) has ${Math.round(left!)} g left; this print needs ${needed} g.`);
+        if (found.filament.diameter && report.filament.used_mm.length) {
+          const sliced = Number(splitList((await readGcode(result.final)).config.get("filament_diameter") ?? "")[0]);
+          if (Number.isFinite(sliced) && Math.abs(sliced - found.filament.diameter) > 0.1) {
+            messages.unshift(`Spool ${found.id} is ${found.filament.diameter} mm filament; this G-code is sliced for ${sliced} mm.`);
+          }
+        }
+      }
+
       return json({
         output: result.final,
         presets,
@@ -159,6 +190,7 @@ export function registerSlice(server: McpServer, { slicer }: ToolDeps): void {
         transforms: args.transforms,
         post_process: args.allow_post_process ? "allowed" : "disabled",
         messages: messages.length ? messages : undefined,
+        spool,
         result: report,
       });
     },

@@ -29,6 +29,8 @@ export interface Bundle {
   vendorId: string;
   name: string;
   filaments: Set<string>;
+  /** Per filament section (abstract parents included): the keys needed to place a derived preset. */
+  filamentSections: Map<string, Map<string, string>>;
   slaMaterials: Set<string>;
   models: Map<string, PrinterModelInfo>;
 }
@@ -59,7 +61,8 @@ async function readBundle(path: string, vendorId: string): Promise<Bundle> {
   const hit = bundleCache.get(path);
   if (hit && hit.mtime === mtime) return hit.bundle;
 
-  const bundle: Bundle = { vendorId, name: vendorId, filaments: new Set(), slaMaterials: new Set(), models: new Map() };
+  const bundle: Bundle = { vendorId, name: vendorId, filaments: new Set(), filamentSections: new Map(), slaMaterials: new Set(), models: new Map() };
+  let filamentSection: Map<string, string> | null = null;
   let kind = "";
   let name = "";
   let model: PrinterModelInfo | null = null;
@@ -71,6 +74,11 @@ async function readBundle(path: string, vendorId: string): Promise<Bundle> {
       kind = colon === -1 ? header : header.slice(0, colon);
       name = colon === -1 ? "" : header.slice(colon + 1);
       model = null;
+      filamentSection = null;
+      if (kind === "filament") {
+        filamentSection = new Map();
+        bundle.filamentSections.set(name, filamentSection);
+      }
       // "*name*" presets are abstract parents, never shown.
       const abstract = name.startsWith("*") && name.endsWith("*");
       if (kind === "filament" && !abstract) bundle.filaments.add(name);
@@ -85,6 +93,7 @@ async function readBundle(path: string, vendorId: string): Promise<Bundle> {
     if (eq === -1) continue;
     const key = line.slice(0, eq).trim();
     const value = line.slice(eq + 1).trim();
+    if (filamentSection && SECTION_KEYS.has(key)) filamentSection.set(key, value);
     if (kind === "vendor" && key === "name") bundle.name = value;
     else if (model && key === "name") model.name = value;
     else if (model && key === "variants") model.variants = value.split(";").map((v) => v.trim()).filter(Boolean);
@@ -92,6 +101,33 @@ async function readBundle(path: string, vendorId: string): Promise<Bundle> {
   }
   bundleCache.set(path, { mtime, bundle });
   return bundle;
+}
+
+const SECTION_KEYS = new Set([
+  "inherits",
+  "filament_type",
+  "compatible_printers",
+  "compatible_printers_condition",
+  "compatible_prints",
+  "compatible_prints_condition",
+]);
+
+/**
+ * A key of a filament preset as the bundle defines it: its own section, else its parents. With
+ * "inherits = A; B" the later parent is applied over the earlier one, so it is asked first.
+ */
+export function bundleFilamentValue(bundle: Bundle, name: string, key: string, seen = new Set<string>()): string | undefined {
+  if (seen.has(name)) return undefined;
+  seen.add(name);
+  const section = bundle.filamentSections.get(name);
+  if (!section) return undefined;
+  if (section.has(key)) return section.get(key);
+  const parents = (section.get("inherits") ?? "").split(";").map((parent) => parent.trim()).filter(Boolean);
+  for (const parent of parents.reverse()) {
+    const value = bundleFilamentValue(bundle, parent, key, seen);
+    if (value !== undefined) return value;
+  }
+  return undefined;
 }
 
 /** Variants as PrusaSlicer's unescape_strings_cstyle reads them: ";"-separated, optionally quoted. */

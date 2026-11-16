@@ -1,10 +1,12 @@
 import type { CallToolResult, McpServer, ServerContext, ToolAnnotations, ToolCallback } from "@modelcontextprotocol/server";
 import type { z } from "zod";
 import type { SlicerContext } from "../context.ts";
+import type { PrinterialsAccount } from "../printerials/account.ts";
 import { errorMessage, Refusal } from "../util/errors.ts";
 
 export interface ToolDeps {
   slicer: SlicerContext;
+  account: PrinterialsAccount;
 }
 
 /** Above this the answer is cut, and says so: a silent cut is worse than a visible one. */

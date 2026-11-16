@@ -40,13 +40,14 @@ export function v3Backend(prerelease: boolean): Backend {
     parseProfilesQuery(json) {
       const data = json as {
         printer_profile?: string;
-        print_profiles?: Array<{ name: string; filament_profiles?: string[]; sla_material_profiles?: string[] }>;
+        print_profiles?: Array<{ name: string; filament_profiles?: string[]; user_filament_profiles?: string[]; sla_material_profiles?: string[] }>;
       };
       const listing: ProfilesListing = {
         printer: data.printer_profile ?? "",
         prints: (data.print_profiles ?? []).map((print) => ({
           name: print.name,
-          filaments: print.filament_profiles ?? print.sla_material_profiles ?? [],
+          // 2.9.7 lists user presets separately; assumed to carry over.
+          filaments: [...(print.filament_profiles ?? print.sla_material_profiles ?? []), ...(print.user_filament_profiles ?? [])],
         })),
       };
       return listing;

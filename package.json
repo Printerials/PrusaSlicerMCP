@@ -16,7 +16,7 @@
     "start": "node build/index.js",
     "dev": "node src/index.ts",
     "test": "node --test 'test/unit/*.test.ts'",
-    "test:integration": "node --test test/integration.test.ts"
+    "test:integration": "node --test test/integration*.test.ts"
   },
   "engines": {
     "node": ">=24"

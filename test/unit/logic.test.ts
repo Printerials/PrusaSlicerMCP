@@ -110,3 +110,12 @@ test("postprocess: pause after the layer change, before the unretract", async ()
 
   await assert.rejects(insertAtLayers(input, join(dir, "x.gcode"), [{ layer: 99, gcode: "M601", label: "pause" }]), /does not exist; the print has 25 layers/);
 });
+
+test("profile query: user filament presets come in their own list (2.9.7)", async () => {
+  const { v2Backend } = await import("../../src/slicer/v2.ts");
+  const listing = v2Backend.parseProfilesQuery({
+    printer_profile: "P",
+    print_profiles: [{ name: "0.20mm", filament_profiles: ["Generic PETG @P"], user_filament_profiles: ["My PETG @P"] }],
+  });
+  assert.deepEqual(listing.prints[0]!.filaments, ["Generic PETG @P", "My PETG @P"]);
+});

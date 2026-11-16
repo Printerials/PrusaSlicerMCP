@@ -4,7 +4,7 @@
  * temporary directory; the GUI is not touched (open_in_prusaslicer is left out on purpose).
  */
 import assert from "node:assert/strict";
-import { chmod, copyFile, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,19 +63,25 @@ describe("against the installed PrusaSlicer", { skip }, () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
     assert.deepEqual(names, [
+      "connect_printerials",
+      "create_filament_preset",
       "describe_setting",
+      "disconnect_printerials",
       "edit_project",
       "export_model",
+      "find_printerials_filament",
       "find_profiles",
       "gcode_info",
       "get_config",
       "install_profiles",
       "list_printers",
       "list_profiles",
+      "list_spools",
       "model_info",
       "open_in_prusaslicer",
       "postprocess_gcode",
       "project_info",
+      "record_spool_usage",
       "screenshot_prusaslicer",
       "slice",
       "slicer_status",
@@ -188,6 +194,23 @@ describe("against the installed PrusaSlicer", { skip }, () => {
     const allowed = await call("slice", { inputs: [join(dir, "project.3mf")], output: join(dir, "project2.gcode"), allow_post_process: true });
     assert.equal(allowed.isError, false, allowed.text);
     assert.equal(existsSync(marker), true, "allow_post_process did not run the script");
+
+    // A project whose output_filename_format climbs out of the output directory. PrusaSlicer 2.9.7
+    // follows it and replaces whatever file is there (verified with ../../victim.txt).
+    await mkdir(join(dir, "downloads"), { recursive: true });
+    await writeFile(join(dir, "victim.txt"), "my notes\n");
+    files["Metadata/Slic3r_PE.config"] = [
+      `; printer_settings_id = ${printer}`,
+      `; print_settings_id = ${prints[0]}`,
+      `; filament_settings_id = "${filament}"`,
+      "; output_filename_format = ../../victim.txt",
+      "",
+    ].join("\n");
+    await writeZip(join(dir, "downloads", "escape.3mf"), files);
+    const escaped = await call("slice", { inputs: [join(dir, "downloads", "escape.3mf")] });
+    assert.equal(escaped.isError, false, escaped.text);
+    assert.equal(await readFile(join(dir, "victim.txt"), "utf8"), "my notes\n", "the project's output_filename_format wrote outside the output directory");
+    assert.match(escaped.data.output, /\/downloads\/escape\.b?gcode$/);
   });
 
   test("find and install a profile, on a copy of the datadir", async (t) => {

@@ -46,6 +46,11 @@ Claude Desktop (`claude_desktop_config.json`):
 | `PRUSASLICER_DATADIR` | Use another PrusaSlicer data directory (passed as `--datadir`) | PrusaSlicer's own |
 | `PRUSASLICER_MCP_ROOTS` | Directories the server may read and write, separated by the path delimiter | anywhere |
 | `PRUSASLICER_MCP_TIMEOUT_MS` | Time limit per slice or export | 600000 |
+| `SPOOLMAN_URL` | A Spoolman server (`http://host:7912`), or Printerials' Spoolman-compatible API by token URL. Goes before a connected Printerials account. The URL is treated as a credential: set it here only, it never appears in answers or logs | none |
+| `PRINTERIALS_URL` | Printerials: its public catalogue, and the account `connect_printerials` links | `https://printerials.com` |
+| `PRINTERIALS_TOKEN_FILE` | Keep the Printerials connection in this file (plain text, mode 0600) instead of the macOS Keychain; needed on Windows and Linux | Keychain on macOS |
+| `PRINTERIALS_COUNTRY` | Delivery country for Printerials prices (`NL`, `DE`, ...). Without it no price is used | none |
+| `PRINTERIALS_CURRENCY` | Currency for those prices | `EUR` |
 
 ## Tools
 
@@ -58,6 +63,12 @@ Claude Desktop (`claude_desktop_config.json`):
 | `describe_setting` | Type, unit, allowed values, default and description of a setting, or a search over all of them |
 | `find_profiles` | Official filament and printer profiles in the installed bundles, also the ones not enabled yet; filament compatibility as PrusaSlicer evaluates it |
 | `install_profiles` | Enable or disable those profiles, as the Configuration Wizard does (PrusaSlicer must be closed; dry_run and a backup) |
+| `find_printerials_filament` | Search Printerials' filament catalogue; gives the variant id for `create_filament_preset` |
+| `create_filament_preset` | A PrusaSlicer profile for a filament without an official one, from a Spoolman spool, Printerials or stated values, built on the matching Prusa generic for the printer |
+| `connect_printerials` | Link your Printerials account with a browser sign-in (OAuth), for your spools without a pasted URL |
+| `disconnect_printerials` | Revoke that link at Printerials and remove it here |
+| `list_spools` | Spools on your Printerials shelf or in Spoolman: filament, grams left (weighed), price per kg, location |
+| `record_spool_usage` | Subtract what a print used from a spool, after the user confirmed the print was made |
 | `slice` | Slice to G-code with presets, a project's config or the GUI selection, plus overrides and transforms |
 | `model_info` | PrusaSlicer's mesh analysis: size, volume, facets, parts, manifold |
 | `project_info` | A 3MF's presets, settings it changes, per-object and per-range settings, colour changes, thumbnail |
@@ -90,11 +101,26 @@ These were verified against PrusaSlicer 2.9.7 on macOS, and the server is built 
 - **Output is staged.**
   - PrusaSlicer writes into a scratch directory next to the destination, and the result is renamed into place.
   - Without an explicit output name, the file keeps the name PrusaSlicer derives from `output_filename_format`, with a `-2` suffix and so on when that name is taken.
+  - Except for a project's own `output_filename_format`: PrusaSlicer follows `../` in it out of the output directory and replaces whatever file is there (`../../victim.txt` overwrote a text file). A project slices to its own name instead (`bracket.3mf` → `bracket.bgcode`).
 - **Installed profiles live in `PrusaSlicer.ini`:** `[filaments]` (`name = 1`) and `[vendor:<id>]` (`model:<ID> = <variants>`), as the Configuration Wizard writes them.
   - Variants with spaces must be quoted (`"HT Hotend 0.4"`), or PrusaSlicer drops the model.
   - A duplicate key makes it reject the whole file as corrupt.
   - The GUI keeps this in memory and writes it back on quitting. So `install_profiles` refuses while PrusaSlicer runs on the same data directory.
   - `find_profiles` lets PrusaSlicer judge compatibility, by querying a scratch copy of the data directory with everything enabled.
+- **A user filament preset inherits nothing.** PrusaSlicer lays a preset file over its built-in defaults, not over its `inherits` parent (2.9.2 source, `PresetCollection::load_presets`). A file with only a temperature slices with bed 0 °C and type PLA.
+  - `create_filament_preset` therefore writes the complete filament config (the 81 keys of `Preset::filament_options()`) of the printer-specific Prusa generic, with the stated values over it and `inherits` naming the generic.
+  - A stated temperature range keeps the generic's tuned value when it lies inside, and the nearest bound otherwise.
+  - The parent's own compatibility conditions come from the bundle, so the preset shows for the same printers.
+- **User filament presets have their own list.** The profile query returns them in `user_filament_profiles`, next to `filament_profiles`.
+- **Printerials and Spoolman:**
+  - A spool from Printerials carries `external_id = printerials:variant/<id>`, so its catalogue entry (the maker's stated values, with sources) comes along.
+  - What the spool cost beats the market price.
+  - `slice` with `spool_id` warns when the weighed spool holds less than the print needs.
+- **The Printerials connection (OAuth):**
+  - Authorization code with PKCE S256 for a public client (`prusaslicer-mcp`), redirected to `http://127.0.0.1:<random port>/callback`, scopes `shelf:read` and `usage:write`. `connect_printerials` returns at once with the link; the sign-in stays open for 10 minutes.
+  - The access token lives an hour, the refresh token 90 days and rotates on every refresh. Both are kept in the login Keychain (service `PrusaSlicerMCP Printerials`), written by `/usr/bin/security` with the secret on stdin, not in its arguments, which `ps` shows to every user.
+  - A refresh token used twice makes Printerials revoke the whole connection. Every MCP host (Claude Code, Claude Desktop) runs its own server process on the same Keychain item, so refreshes are serialized by a lock file in `~/Library/Caches/PrusaSlicerMCP`, and each refresh rereads the Keychain first.
+  - An access token refused with 401 gets one retry with a new one. A connection Printerials ended (`invalid_grant`) is removed, with `connect_printerials` as the way back.
 - **The running GUI cannot be changed from outside.**
   - Selecting a preset or changing a setting in the open window has no API in 2.9.
   - `edit_project` produces the same result as a new project file. PrusaSlicer shows the changes as modified settings when it opens it.
