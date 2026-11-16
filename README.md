@@ -61,6 +61,7 @@ Claude Desktop (`claude_desktop_config.json`):
 | `slice` | Slice to G-code with presets, a project's config or the GUI selection, plus overrides and transforms |
 | `model_info` | PrusaSlicer's mesh analysis: size, volume, facets, parts, manifold |
 | `project_info` | A 3MF's presets, settings it changes, per-object and per-range settings, colour changes, thumbnail |
+| `edit_project` | Switch a 3MF project's filament or print preset and change its settings; PrusaSlicer loads the result to check every value, and it can open it in the GUI |
 | `export_model` | Arrange, rotate, scale, duplicate, split or cut, and write 3MF/STL/OBJ |
 | `gcode_info` | Time, filament, cost, layers, objects; for ASCII also filament per feature and pause/colour/tool events |
 | `postprocess_gcode` | Insert a pause, colour change or custom G-code at layers, with the printer's own G-code |
@@ -94,6 +95,11 @@ These were verified against PrusaSlicer 2.9.7 on macOS, and the server is built 
   - A duplicate key makes it reject the whole file as corrupt.
   - The GUI keeps this in memory and writes it back on quitting. So `install_profiles` refuses while PrusaSlicer runs on the same data directory.
   - `find_profiles` lets PrusaSlicer judge compatibility, by querying a scratch copy of the data directory with everything enabled.
+- **The running GUI cannot be changed from outside.**
+  - Selecting a preset or changing a setting in the open window has no API in 2.9.
+  - `edit_project` produces the same result as a new project file. PrusaSlicer shows the changes as modified settings when it opens it.
+  - A preset switch takes over every value in which the new preset differs from the old one.
+- **Invalid enum values are replaced silently.** `fill_pattern = lightnin` in a project loads as the default `stars`, with exit 0. `edit_project` therefore has PrusaSlicer load the edited project and compares every changed value with what it loaded.
 - **The CLI's 3MF export holds no print settings**, and the CLI embeds no thumbnails (it renders none).
 
 ## PrusaSlicer 3.0

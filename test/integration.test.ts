@@ -64,6 +64,7 @@ describe("against the installed PrusaSlicer", { skip }, () => {
     const names = tools.map((tool) => tool.name).sort();
     assert.deepEqual(names, [
       "describe_setting",
+      "edit_project",
       "export_model",
       "find_profiles",
       "gcode_info",
@@ -230,6 +231,40 @@ describe("against the installed PrusaSlicer", { skip }, () => {
       assert.match(done.data.verified[candidate], /^listed for /);
       const listed = await callCopy("list_profiles", { printer, filter: candidate });
       assert.ok(JSON.stringify(listed.data).includes(candidate));
+
+      // Switch a project to the new filament and change settings, as a user would in the GUI.
+      const exported = await call("export_model", { inputs: [join(dir, "cube.stl")], format: "3mf", output: join(dir, "edit-geometry.3mf") });
+      assert.equal(exported.isError, false, exported.text);
+      const { ZipReader } = await import("../src/formats/zip.ts");
+      const zip = await ZipReader.open(join(dir, "edit-geometry.3mf"));
+      const files: Record<string, Buffer | string> = {};
+      for (const name of zip.entries.keys()) files[name] = (await zip.read(name))!;
+      await zip.close();
+      const base = await callCopy("get_config", { printer, print: prints[0], filament, search: "fill" });
+      files["Metadata/Slic3r_PE.config"] = [
+        `; printer_settings_id = ${printer}`,
+        `; print_settings_id = ${prints[0]}`,
+        `; filament_settings_id = "${filament}"`,
+        ...Object.entries(base.data.values as Record<string, string>).map(([key, value]) => `; ${key} = ${value}`),
+        "",
+      ].join("\n");
+      await writeZip(join(dir, "edit.3mf"), files);
+
+      const edited = await callCopy("edit_project", {
+        path: join(dir, "edit.3mf"),
+        filament: candidate,
+        settings: { fill_density: "10%", fill_pattern: "lightning", infill_every_layers: 2, ensure_vertical_shell_thickness: "disabled" },
+      });
+      assert.equal(edited.isError, false, edited.text);
+      assert.equal(edited.data.presets.after.filament, candidate);
+      const sliced = await callCopy("slice", { inputs: [edited.data.output], output: join(dir, "edit.gcode") });
+      assert.equal(sliced.isError, false, sliced.text);
+      const settings = (await callCopy("gcode_info", { path: join(dir, "edit.gcode"), keys: ["fill_density", "fill_pattern", "infill_every_layers"] })).data.settings;
+      assert.deepEqual(settings, { fill_density: "10%", fill_pattern: "lightning", infill_every_layers: "2" });
+
+      const bad = await callCopy("edit_project", { path: join(dir, "edit.3mf"), settings: { fill_pattern: "lightnin" } });
+      assert.equal(bad.isError, true, "a value PrusaSlicer replaces must be refused");
+      assert.match(bad.text, /did not accept/);
 
       const removed = await callCopy("install_profiles", { uninstall: [candidate] });
       assert.deepEqual(removed.data.uninstalled, [candidate]);

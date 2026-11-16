@@ -19,9 +19,10 @@ export interface SettingInfo {
   category: string;
   /**
    * From the help's metavar. PrusaSlicer prints none for flags, enums and per-extruder vectors:
-   * a list of allowed values marks an enum, a default other than 0 or 1 a vector.
+   * a list of allowed values marks an enum, a "%" default a percentage, another default that is
+   * not 0 or 1 a vector.
    */
-  type: "bool" | "number" | "string" | "point" | "points" | "enum" | "list";
+  type: "bool" | "number" | "string" | "point" | "points" | "enum" | "percent" | "list";
   description: string;
   unit?: string;
   values?: string[];
@@ -87,6 +88,7 @@ export function parseHelpFff(text: string): SettingInfo[] {
     };
     splitTrailer(info);
     if (!metavar && info.values) info.type = "enum";
+    else if (!metavar && (info.unit === "%" || info.default?.endsWith("%"))) info.type = "percent";
     else if (!metavar && info.default !== undefined && info.default !== "0" && info.default !== "1") info.type = "list";
     return info;
   });

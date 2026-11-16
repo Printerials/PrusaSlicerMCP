@@ -1,5 +1,5 @@
 import { open, type FileHandle } from "node:fs/promises";
-import { inflateRawSync } from "node:zlib";
+import { crc32, deflateRawSync, inflateRawSync } from "node:zlib";
 
 /**
  * A minimal ZIP reader for 3MF: the central directory, stored and deflated entries, ZIP64 sizes
@@ -9,6 +9,7 @@ import { inflateRawSync } from "node:zlib";
 export interface ZipEntry {
   name: string;
   method: number;
+  crc32: number;
   compressedSize: number;
   size: number;
   localHeaderOffset: number;
@@ -57,14 +58,22 @@ export class ZipReader {
     return undefined;
   }
 
-  async read(name: string): Promise<Buffer | null> {
+  /** The entry's data as stored (compressed), for copying it into another archive unchanged. */
+  async readRaw(name: string): Promise<{ entry: ZipEntry; data: Buffer } | null> {
     const entry = this.find(name);
     if (!entry) return null;
-    if (entry.size > MAX_ENTRY) throw new Error(`${name} is too large to read (${entry.size} bytes).`);
+    if (entry.compressedSize > MAX_ENTRY) throw new Error(`${name} is too large to read (${entry.compressedSize} bytes).`);
     const header = await readAt(this.handle, entry.localHeaderOffset, 30);
     if (header.readUInt32LE(0) !== LOCAL) throw new Error(`Corrupt ZIP: no local header for ${name}.`);
     const dataStart = entry.localHeaderOffset + 30 + header.readUInt16LE(26) + header.readUInt16LE(28);
-    const data = await readAt(this.handle, dataStart, entry.compressedSize);
+    return { entry, data: await readAt(this.handle, dataStart, entry.compressedSize) };
+  }
+
+  async read(name: string): Promise<Buffer | null> {
+    const raw = await this.readRaw(name);
+    if (!raw) return null;
+    const { entry, data } = raw;
+    if (entry.size > MAX_ENTRY) throw new Error(`${name} is too large to read (${entry.size} bytes).`);
     if (entry.method === 0) return data;
     if (entry.method === 8) return inflateRawSync(data);
     throw new Error(`${name} uses ZIP compression method ${entry.method}, which is not supported.`);
@@ -121,6 +130,7 @@ async function readCentralDirectory(handle: FileHandle): Promise<Map<string, Zip
   for (let i = 0; i < count && p + 46 <= cd.length; i++) {
     if (cd.readUInt32LE(p) !== CENTRAL) throw new Error("Corrupt ZIP central directory.");
     const method = cd.readUInt16LE(p + 10);
+    const crc32 = cd.readUInt32LE(p + 16);
     let compressedSize = cd.readUInt32LE(p + 20);
     let uncompressed = cd.readUInt32LE(p + 24);
     const nameLength = cd.readUInt16LE(p + 28);
@@ -150,8 +160,81 @@ async function readCentralDirectory(handle: FileHandle): Promise<Map<string, Zip
       e += 4 + len;
     }
 
-    entries.set(name, { name, method, compressedSize, size: uncompressed, localHeaderOffset: offset });
+    entries.set(name, { name, method, crc32, compressedSize, size: uncompressed, localHeaderOffset: offset });
     p += 46 + nameLength + extraLength + commentLength;
   }
   return entries;
+}
+
+/**
+ * Writes a ZIP archive entry by entry: raw entries (copied, still compressed, with their CRC) and
+ * new ones (deflated here). No ZIP64: entries and the archive stay under 4 GB.
+ */
+export class ZipWriter {
+  private readonly central: Buffer[] = [];
+  private offset = 0;
+  private count = 0;
+  private readonly handle: FileHandle;
+
+  private constructor(handle: FileHandle) {
+    this.handle = handle;
+  }
+
+  static async create(path: string): Promise<ZipWriter> {
+    return new ZipWriter(await open(path, "wx"));
+  }
+
+  async addRaw(name: string, method: number, crc32: number, size: number, compressed: Buffer): Promise<void> {
+    if (size > 0xffffffff || compressed.length > 0xffffffff || this.offset > 0xffffffff) {
+      throw new Error("The archive is too large to write without ZIP64.");
+    }
+    const nameBytes = Buffer.from(name, "utf8");
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(LOCAL, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6); // UTF-8 names
+    local.writeUInt16LE(method, 8);
+    local.writeUInt32LE(crc32 >>> 0, 14);
+    local.writeUInt32LE(compressed.length, 18);
+    local.writeUInt32LE(size, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(CENTRAL, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(method, 10);
+    central.writeUInt32LE(crc32 >>> 0, 16);
+    central.writeUInt32LE(compressed.length, 20);
+    central.writeUInt32LE(size, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(this.offset, 42);
+    this.central.push(central, nameBytes);
+
+    await this.handle.write(Buffer.concat([local, nameBytes]));
+    await this.handle.write(compressed);
+    this.offset += 30 + nameBytes.length + compressed.length;
+    this.count++;
+  }
+
+  async add(name: string, content: Buffer | string): Promise<void> {
+    const data = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf8");
+    await this.addRaw(name, 8, crc32(data), data.length, deflateRawSync(data));
+  }
+
+  async close(): Promise<void> {
+    try {
+      const cd = Buffer.concat(this.central);
+      const end = Buffer.alloc(22);
+      end.writeUInt32LE(EOCD, 0);
+      end.writeUInt16LE(this.count, 8);
+      end.writeUInt16LE(this.count, 10);
+      end.writeUInt32LE(cd.length, 12);
+      end.writeUInt32LE(this.offset, 16);
+      await this.handle.write(Buffer.concat([cd, end]));
+    } finally {
+      await this.handle.close();
+    }
+  }
 }

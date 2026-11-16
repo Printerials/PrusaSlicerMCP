@@ -46,7 +46,9 @@ test("--help-fff: catalogue with types, units, values and defaults", async () =>
   assert.equal(byKey.get("bed_temperature")?.unit, "°C");
   assert.equal(byKey.get("support_material")?.type, "bool");
   // Per-extruder vectors have no metavar in the help, but a default that is not a flag.
-  assert.equal(byKey.get("filament_seam_gap_distance")?.type, "list");
+  assert.equal(byKey.get("filament_seam_gap_distance")?.type, "percent");
+  assert.equal(byKey.get("fill_density")?.type, "percent");
+  assert.equal(byKey.get("ensure_vertical_shell_thickness")?.type, "enum");
   assert.ok(byKey.has("binary_gcode"));
   assert.ok(byKey.has("post_process"));
 });
