@@ -1,0 +1,29 @@
+{
+ "printer_profile": "Prusa CORE One & One+ & One+ (Gen2)",
+ "print_profiles": [
+  {
+   "name": "0.10mm FAST DETAIL @COREONE 0.4HF",
+   "tool_print_profiles": [
+    "no tool"
+   ],
+   "filament_profiles": [
+    "3D-Fuel Pro PCTG@COREONE HF0.4@COREONE 0.4",
+    "3D-Fuel Pro PETG@COREONE HF0.4@COREONE 0.4",
+    "3D-Fuel Tough PLA+@COREONE HF0.4@COREONE 0.4",
+    "3DJAKE ecoPLA@COREONE HF0.4@COREONE 0.4"
+   ]
+  },
+  {
+   "name": "0.15mm BALANCED @COREONE 0.4HF",
+   "tool_print_profiles": [
+    "no tool"
+   ],
+   "filament_profiles": [
+    "3D-Fuel Pro PCTG@COREONE HF0.4@COREONE 0.4",
+    "3D-Fuel Pro PETG@COREONE HF0.4@COREONE 0.4",
+    "3D-Fuel Tough PLA+@COREONE HF0.4@COREONE 0.4",
+    "3DJAKE ecoPLA@COREONE HF0.4@COREONE 0.4"
+   ]
+  }
+ ]
+}

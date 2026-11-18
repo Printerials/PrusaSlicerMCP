@@ -88,7 +88,8 @@ function buildReport(format: "ascii" | "binary", size: number, generator: string
     presets: {
       printer: config.get("printer_settings_id") || null,
       print: config.get("print_settings_id") || null,
-      filament: config.has("filament_settings_id") ? splitList(config.get("filament_settings_id")!) : [],
+      // 3.0.0-alpha14 writes the three ids empty; empty means unknown, not a preset named "".
+      filament: config.has("filament_settings_id") ? splitList(config.get("filament_settings_id")!).filter((name) => name !== "") : [],
     },
     time: {
       normal,

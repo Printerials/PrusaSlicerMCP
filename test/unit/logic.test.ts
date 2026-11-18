@@ -77,9 +77,10 @@ test("3.0 config boxes flatten like 2.x vectors", () => {
   assert.equal(config.get("nozzle_diameter"), "0.4,0.6");
   assert.equal(config.get("ironing"), "1");
   assert.equal(config.get("temperature"), "215,240");
-  const saved = v3Backend(true).parseSavedConfig(JSON.stringify({ preset: { printer: "XL" }, configuration: { print: { layer_height: 0.15 } } }));
-  assert.equal(saved.get("layer_height"), "0.15");
-  assert.equal(saved.get("preset.printer"), "XL");
+  // 3.0 stores percentages as {"value", "is_percent"}: they are values, not named boxes.
+  const percent = flattenConfiguration({ print_settings: { fill_density: { value: 15, is_percent: true }, infill_anchor: { value: 2, is_percent: false } } });
+  assert.equal(percent.get("fill_density"), "15%");
+  assert.equal(percent.get("infill_anchor"), "2");
 });
 
 test("postprocess: pause after the layer change, before the unretract", async () => {

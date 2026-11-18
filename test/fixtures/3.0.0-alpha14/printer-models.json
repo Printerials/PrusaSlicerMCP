@@ -1,0 +1,82 @@
+{
+ "printer_models": [
+  {
+   "id": "+YV/Nw/NSXutJRyHQ/TThg",
+   "name": "Prusa XL+",
+   "technology": "FFF",
+   "variants": [
+    {
+     "id": "ece14ed0-a74c-4342-a895-778d69df3e01",
+     "name": "Prusa XL+ 0.4 HF",
+     "printer_profiles": [
+      {
+       "name": "Prusa XL+ 0.4 HF",
+       "extruders_cnt": 1,
+       "bed": {
+        "type": "Rectangle",
+        "width": 360.0,
+        "height": 360.0,
+        "origin": "[0, 0]",
+        "max_print_height": 360.0
+       }
+      }
+     ]
+    }
+   ],
+   "vendor_name": "Prusa Research FFF",
+   "vendor_id": "PrusaResearch"
+  },
+  {
+   "id": "2clJ4GxITzaQ1Vu4gqG2eQ",
+   "name": "Prusa CORE One & One+ & One+ (Gen2)",
+   "technology": "FFF",
+   "variants": [
+    {
+     "id": "d95efb41-867c-4105-b2d1-e6b65759191e",
+     "name": "Prusa CORE One & One+ 0.4 HF",
+     "printer_profiles": [
+      {
+       "name": "Prusa CORE One & One+ 0.4 HF",
+       "extruders_cnt": 1,
+       "bed": {
+        "type": "Rectangle",
+        "width": 250.0,
+        "height": 220.0,
+        "origin": "[0, 0]",
+        "max_print_height": 270.0
+       }
+      }
+     ]
+    }
+   ],
+   "vendor_name": "Prusa Research FFF",
+   "vendor_id": "PrusaResearch"
+  },
+  {
+   "id": "4TfihLJ8Q1+uJebMxFdmMw",
+   "name": "Original Prusa MINI",
+   "technology": "FFF",
+   "variants": [
+    {
+     "id": "75e711ab-0cce-4658-ae54-1673c113267f",
+     "name": "Prusa MINI & MINI+ 0.4",
+     "printer_profiles": [
+      {
+       "name": "Prusa MINI & MINI+ 0.4",
+       "extruders_cnt": 1,
+       "bed": {
+        "type": "Rectangle",
+        "width": 180.0,
+        "height": 180.0,
+        "origin": "[0, 0]",
+        "max_print_height": 180.0
+       }
+      }
+     ]
+    }
+   ],
+   "vendor_name": "Prusa Research FFF",
+   "vendor_id": "PrusaResearch"
+  }
+ ]
+}

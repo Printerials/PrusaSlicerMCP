@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parseHelpFff } from "../formats/help.ts";
 import { parseIniConfig, parseIniSections } from "../formats/ini.ts";
 import { EMPTY_APP_STATE, type AppState, type Backend, type ProfilesListing } from "./backend.ts";
 
@@ -9,6 +10,10 @@ import { EMPTY_APP_STATE, type AppState, type Backend, type ProfilesListing } fr
 export const v2Backend: Backend = {
   major: 2,
   experimental: false,
+  catalog: { toFile: false, args: () => ["--help-fff"], parse: parseHelpFff },
+  queryToFile: false,
+  patchConfig: null,
+  keepsGuiSelection: true,
 
   defaultDatadir() {
     const dir =

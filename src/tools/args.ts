@@ -65,23 +65,28 @@ export type Overrides = z.infer<typeof overridesSchema>;
 const BLOCKED = new Set(["post_process", "output_filename_format"]);
 
 /** Checks every key against PrusaSlicer's own catalogue, so a typo is caught before the CLI rejects it. */
-export function overrideArgs(overrides: Overrides | undefined, catalog: Map<string, SettingInfo>): { args: string[]; keys: string[] } {
-  if (!overrides) return { args: [], keys: [] };
-  const args: string[] = [];
-  const keys: string[] = [];
-  for (const [rawKey, rawValue] of Object.entries(overrides)) {
+export function checkOverrides(overrides: Overrides | undefined, catalog: ReadonlyMap<string, SettingInfo>): Map<string, string> {
+  const checked = new Map<string, string>();
+  for (const [rawKey, rawValue] of Object.entries(overrides ?? {})) {
     const key = rawKey.trim().replace(/^--/, "").replace(/-/g, "_");
     if (BLOCKED.has(key)) {
       throw new Refusal(`${key} cannot be set through overrides.${key === "post_process" ? " Post-processing scripts stay off unless allow_post_process is set, and then come from the presets." : ""}`);
     }
-    const info = catalog.get(key);
-    if (!info) throw new Refusal(`Unknown setting "${rawKey}".`, { did_you_mean: suggest(key, catalog.keys()) });
+    if (!catalog.has(key)) throw new Refusal(`Unknown setting "${rawKey}".`, { did_you_mean: suggest(key, catalog.keys()) });
     // Values are left to PrusaSlicer to judge: some enums (filament_type) accept custom values.
-    const value = typeof rawValue === "boolean" ? (rawValue ? "1" : "0") : String(rawValue);
+    checked.set(key, typeof rawValue === "boolean" ? (rawValue ? "1" : "0") : String(rawValue));
+  }
+  return checked;
+}
+
+/** The overrides as 2.x command line options. 3.0 ignores those: see patchSavedConfig. */
+export function overrideArgs(overrides: Overrides | undefined, catalog: ReadonlyMap<string, SettingInfo>): { args: string[]; keys: string[] } {
+  const args: string[] = [];
+  const checked = checkOverrides(overrides, catalog);
+  for (const [key, value] of checked) {
     const cli = key.replace(/_/g, "-");
     if (value === "") args.push(`--${cli}`, "");
     else args.push(`--${cli}=${value}`);
-    keys.push(key);
   }
-  return { args, keys };
+  return { args, keys: [...checked.keys()] };
 }

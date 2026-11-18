@@ -27,6 +27,15 @@ export interface SettingInfo {
   unit?: string;
   values?: string[];
   default?: string;
+  /**
+   * PrusaSlicer 3.0 only, from --export-config-schema: the section of a saved config the setting
+   * lives in ("print_settings", "filament_settings", "printer_settings"), and its range.
+   */
+  location?: string;
+  min?: number;
+  max?: number;
+  /** The type PrusaSlicer 3.0 names for it: "Float", "FloatOrPercentage", "Enum", "Array"... */
+  schemaType?: string;
 }
 
 const VERSION = /PrusaSlicer-(\d+)\.(\d+)\.(\d+[^\s]*)/;
@@ -115,4 +124,75 @@ function splitTrailer(info: SettingInfo): void {
   } else if (before.endsWith(",")) {
     info.unit = before.slice(0, -1).trim();
   }
+}
+
+const SCHEMA_LOCATIONS: Record<string, string> = {
+  printer: "printer_settings",
+  print: "print_settings",
+  tool_print: "toolprint_settings",
+  filament: "filament_settings",
+};
+
+interface SchemaItem {
+  name: string;
+  type: string;
+  element_type?: string;
+  min?: number | null;
+  max?: number | null;
+  enum_values?: string[];
+  value?: unknown;
+}
+
+/**
+ * The settings catalogue of PrusaSlicer 3.0, from `--export-config-schema FILE` (alpha14 prints
+ * no setting list with --help-fff any more). Only the FFF sections: SLA is not sliced here.
+ * The schema has no descriptions, so description stays empty.
+ */
+export function parseConfigSchema(text: string): SettingInfo[] {
+  const schema = JSON.parse(text) as Record<string, { items?: SchemaItem[] }>;
+  const entries: SettingInfo[] = [];
+  for (const [section, location] of Object.entries(SCHEMA_LOCATIONS)) {
+    for (const item of schema[section]?.items ?? []) {
+      entries.push({
+        key: item.name,
+        category: section === "tool_print" ? "Tool" : section[0]!.toUpperCase() + section.slice(1),
+        type: schemaKind(item),
+        description: "",
+        values: item.enum_values,
+        default: item.value === undefined || item.value === null ? undefined : formatSchemaValue(item.value),
+        location,
+        min: item.min ?? undefined,
+        max: item.max ?? undefined,
+        schemaType: item.type,
+      });
+    }
+  }
+  return entries;
+}
+
+function schemaKind(item: SchemaItem): SettingInfo["type"] {
+  switch (item.type) {
+    case "Bool":
+      return "bool";
+    case "Float":
+    case "Int":
+    case "OptInt":
+      return "number";
+    case "Percentage":
+    case "FloatOrPercentage":
+      return "percent";
+    case "Enum":
+      return "enum";
+    case "Array":
+      return item.element_type === "Vec2d" ? "points" : "list";
+    default:
+      return "string";
+  }
+}
+
+function formatSchemaValue(value: unknown): string {
+  if (typeof value === "boolean") return value ? "1" : "0";
+  if (Array.isArray(value)) return value.map(formatSchemaValue).join(",");
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return String(value);
 }

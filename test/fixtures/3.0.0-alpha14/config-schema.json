@@ -1,0 +1,215 @@
+{
+ "printer": {
+  "location": "Printer",
+  "items": [
+   {
+    "name": "bed_shape",
+    "max": null,
+    "min": null,
+    "type": "Array",
+    "element_type": "Vec2d",
+    "location": "Printer",
+    "overrides_in": [],
+    "value": [
+     [
+      0.0,
+      0.0
+     ],
+     [
+      200.0,
+      0.0
+     ],
+     [
+      200.0,
+      200.0
+     ],
+     [
+      0.0,
+      200.0
+     ]
+    ]
+   },
+   {
+    "name": "binary_gcode",
+    "max": null,
+    "min": null,
+    "type": "Bool",
+    "location": "Printer",
+    "overrides_in": [],
+    "value": false
+   }
+  ]
+ },
+ "print": {
+  "location": "Print",
+  "items": [
+   {
+    "name": "fill_density",
+    "max": 100.0,
+    "min": 0.0,
+    "type": "Percentage",
+    "location": "Print",
+    "overrides_in": [
+     "Tool",
+     "Object",
+     "Volume",
+     "MacroSlotOverrides"
+    ],
+    "value": {
+     "value": 20.0,
+     "is_percent": true
+    }
+   },
+   {
+    "name": "fill_pattern",
+    "max": null,
+    "min": null,
+    "type": "Enum",
+    "enum_values": [
+     "rectilinear",
+     "alignedrectilinear",
+     "grid",
+     "triangles",
+     "stars",
+     "cubic",
+     "line",
+     "concentric",
+     "honeycomb",
+     "3dhoneycomb",
+     "gyroid",
+     "hilbertcurve",
+     "archimedeanchords",
+     "octagramspiral",
+     "adaptivecubic",
+     "supportcubic",
+     "lightning",
+     "zigzag"
+    ],
+    "location": "Print",
+    "overrides_in": [
+     "Tool",
+     "Object",
+     "Volume",
+     "MacroSlotOverrides"
+    ],
+    "value": "stars"
+   },
+   {
+    "name": "layer_height",
+    "max": null,
+    "min": 0.01,
+    "type": "Float",
+    "location": "Print",
+    "overrides_in": [
+     "Object",
+     "Volume"
+    ],
+    "value": 0.3
+   },
+   {
+    "name": "output_filename_format",
+    "max": null,
+    "min": null,
+    "type": "String",
+    "location": "Print",
+    "overrides_in": [],
+    "value": "[input_filename_base].gcode"
+   },
+   {
+    "name": "perimeter_speed",
+    "max": null,
+    "min": 0.0,
+    "type": "Float",
+    "location": "Print",
+    "overrides_in": [
+     "Tool",
+     "Object",
+     "Volume",
+     "MacroSlotOverrides"
+    ],
+    "value": 60.0
+   },
+   {
+    "name": "post_process",
+    "max": null,
+    "min": null,
+    "type": "Array",
+    "element_type": "String",
+    "location": "Print",
+    "overrides_in": [],
+    "value": []
+   },
+   {
+    "name": "retract_lift",
+    "max": null,
+    "min": 0.0,
+    "type": "Float",
+    "location": "Print",
+    "overrides_in": [
+     "Tool",
+     "Filament",
+     "MacroSlotOverrides"
+    ],
+    "value": 0.0
+   },
+   {
+    "name": "thick_bridges",
+    "max": null,
+    "min": null,
+    "type": "Bool",
+    "location": "Print",
+    "overrides_in": [
+     "Tool",
+     "Object",
+     "MacroSlotOverrides"
+    ],
+    "value": true
+   },
+   {
+    "name": "top_solid_min_thickness",
+    "max": null,
+    "min": 0.0,
+    "type": "Float",
+    "location": "Print",
+    "overrides_in": [
+     "Tool",
+     "Object",
+     "Volume",
+     "MacroSlotOverrides"
+    ],
+    "value": 0.0
+   }
+  ]
+ },
+ "tool_print": {
+  "location": "Tool",
+  "items": []
+ },
+ "filament": {
+  "location": "Filament",
+  "items": [
+   {
+    "name": "filament_type",
+    "max": null,
+    "min": null,
+    "type": "String",
+    "location": "Filament",
+    "overrides_in": [
+     "MacroSlotOverrides"
+    ],
+    "value": "PLA"
+   },
+   {
+    "name": "temperature",
+    "max": 1500.0,
+    "min": 0.0,
+    "type": "Int",
+    "location": "Filament",
+    "overrides_in": [
+     "MacroSlotOverrides"
+    ],
+    "value": 200
+   }
+  ]
+ }
+}

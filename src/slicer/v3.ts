@@ -2,11 +2,17 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parseConfigSchema } from "../formats/help.ts";
 import type { FlatConfig } from "../formats/ini.ts";
 import { EMPTY_APP_STATE, type AppState, type Backend, type ProfilesListing } from "./backend.ts";
+import { patchSavedConfig } from "./v3-config.ts";
 
 /**
- * PrusaSlicer 3.x, written from the 3.0.0-alpha14 source and not yet run against a 3.0 binary.
+ * PrusaSlicer 3.x. Written from the 3.0.0-alpha14 source, then checked against the alpha14
+ * binary on macOS (2026-11-17): the settings catalogue, the profile queries, --save, and
+ * slicing with a patched --load config (see v3-config.ts). Known alpha14 quirks, not ours:
+ * the G-code header has empty printer, print and filament preset ids, and shows retract_lift = 0
+ * where the config says 0.2.
  *
  * - Data directory: "PrusaSlicer3", "PrusaSlicer3-dev" for alpha and beta builds
  *   (slic3r-base Directories.cpp, versioned_datadir_name).
@@ -19,6 +25,12 @@ export function v3Backend(prerelease: boolean): Backend {
   return {
     major: 3,
     experimental: true,
+
+    // --help-fff prints only the general help in alpha14; the settings come from the schema export.
+    catalog: { toFile: true, args: (outputPath) => ["--export-config-schema", outputPath], parse: parseConfigSchema },
+    queryToFile: true,
+    patchConfig: patchSavedConfig,
+    keepsGuiSelection: false,
 
     defaultDatadir() {
       const name = prerelease ? "PrusaSlicer3-dev" : "PrusaSlicer3";
@@ -58,11 +70,17 @@ export function v3Backend(prerelease: boolean): Backend {
     },
 
     parseSavedConfig(text) {
-      const data = JSON.parse(text) as { preset?: Record<string, unknown>; configuration?: Record<string, unknown> };
+      const data = JSON.parse(text) as { preset?: SavedPreset; configuration?: Record<string, unknown> };
       const config = flattenConfiguration(data.configuration ?? {});
-      for (const [key, value] of Object.entries(data.preset ?? {})) {
-        if (!config.has(key)) config.set(`preset.${key}`, serialize(value));
-      }
+      // 3.0 keeps the preset names beside the settings. The printer's own name is the one under
+      // hw_config (preset.printer.name is the model). Stored under the 2.x keys so both majors
+      // are checked the same way.
+      const { hw_config, print, materials } = data.preset ?? {};
+      if (hw_config?.config_name) config.set("printer_settings_id", hw_config.config_name);
+      if (print?.name) config.set("print_settings_id", print.name);
+      const names = (materials ?? []).map((material) => material.name).filter((name): name is string => Boolean(name));
+      // Quoted and ";"-separated, as 2.x writes a list of strings: names may hold commas.
+      if (names.length) config.set("filament_settings_id", names.map((name) => `"${name.replace(/["\\]/g, "\\$&")}"`).join(";"));
       return config;
     },
 
@@ -79,9 +97,14 @@ export function v3Backend(prerelease: boolean): Backend {
       return state;
     },
 
-    // 3.0 keeps the preset names in the "preset" metadata, flattened above as preset.<key>.
     presetIdKeys: { printer: "printer_settings_id", print: "print_settings_id", filament: "filament_settings_id" },
   };
+}
+
+interface SavedPreset {
+  hw_config?: { config_name?: string };
+  print?: { name?: string };
+  materials?: Array<{ name?: string }>;
 }
 
 /**
@@ -105,7 +128,7 @@ export function flattenConfiguration(configuration: Record<string, unknown>): Fl
       for (const [key, values] of perKey) config.set(key, values.join(","));
     } else if (box && typeof box === "object") {
       for (const [key, value] of Object.entries(box as Record<string, unknown>)) {
-        if (value && typeof value === "object" && !Array.isArray(value)) {
+        if (value && typeof value === "object" && !Array.isArray(value) && !isPercent(value)) {
           // A named box (keyed by name): keep its settings under the name.
           for (const [inner, innerValue] of Object.entries(value as Record<string, unknown>)) {
             config.set(`${key}.${inner}`, serialize(innerValue));
@@ -119,8 +142,14 @@ export function flattenConfiguration(configuration: Record<string, unknown>): Fl
   return config;
 }
 
+/** 3.0 stores percentages and mixed numbers as {"value": 15, "is_percent": true}. */
+function isPercent(value: object): value is { value: number; is_percent: boolean } {
+  return "is_percent" in value && "value" in value;
+}
+
 function serialize(value: unknown): string {
   if (value === null || value === undefined) return "";
+  if (typeof value === "object" && !Array.isArray(value) && isPercent(value)) return `${value.value}${value.is_percent ? "%" : ""}`;
   if (typeof value === "boolean") return value ? "1" : "0";
   if (typeof value === "string" || typeof value === "number") return String(value);
   if (Array.isArray(value)) return value.map(serialize).join(",");

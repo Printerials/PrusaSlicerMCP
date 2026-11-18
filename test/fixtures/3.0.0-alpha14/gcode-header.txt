@@ -1,0 +1,10 @@
+; binary_gcode = 1
+; filament_settings_id = ""
+; fill_density = 15%
+; post_process = 
+; print_settings_id = 
+; printer_settings_id = 
+; retract_lift = 0
+; temperature = 230
+; thick_bridges = 1
+; top_solid_min_thickness = 3.2

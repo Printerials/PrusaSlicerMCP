@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { readdir, stat, unlink } from "node:fs/promises";
+import { readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { z } from "zod";
 import { readGcode } from "../formats/gcode.ts";
@@ -8,9 +8,10 @@ import { splitList } from "../formats/ini.ts";
 import { spoolLabel, spoolPricePerKg } from "../spoolman/client.ts";
 import { spoolman } from "./filament.ts";
 import { describeFailure } from "../slicer/run.ts";
+import { checkOverrides as compareOverrides } from "../slicer/verify.ts";
 import { Refusal } from "../util/errors.ts";
 import { commitFile, exists, expandHome, outputTarget, requireFile, stem, withStaging } from "../util/paths.ts";
-import { overrideArgs, overridesSchema, transformArgs, transformsSchema } from "./args.ts";
+import { checkOverrides, overrideArgs, overridesSchema, transformArgs, transformsSchema } from "./args.ts";
 import { json, progressReporter, tool, WRITES_NEW_FILES, type ToolDeps } from "./common.ts";
 
 export const MODEL_EXTENSIONS = [".stl", ".3mf", ".obj", ".step", ".stp", ".amf"];
@@ -57,7 +58,9 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
       const projects = await Promise.all(
         inputs.filter((input) => extname(input).toLowerCase() === ".3mf").map((input) => readProject(input).catch(() => null)),
       );
-      const project = projects.find((p) => p && (p.kind === "prusaslicer-2" || p.kind === "prusaslicer-3") && p.config.size > 0) ?? null;
+      const projectIndex = projects.findIndex((p) => p && (p.kind === "prusaslicer-2" || p.kind === "prusaslicer-3") && p.config.size > 0);
+      const project = projectIndex === -1 ? null : projects[projectIndex]!;
+      const projectFile = projectIndex === -1 ? null : inputs.filter((input) => extname(input).toLowerCase() === ".3mf")[projectIndex]!;
 
       let presetArgs: string[] = [];
       let projectStem: string | null = null;
@@ -84,8 +87,10 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         projectStem = stem(inputs[0]!);
       }
 
+      const info = await slicer.info();
       const catalog = await slicer.catalog();
       const overrides = overrideArgs(args.overrides, catalog);
+      const requestedOverrides = checkOverrides(args.overrides, catalog);
 
       // Output: a file name we pick, or the name PrusaSlicer derives from output_filename_format.
       let destDir = dirname(inputs[0]!);
@@ -110,15 +115,27 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
       const formatArgs = format === "binary" ? ["--binary-gcode=1"] : format === "ascii" ? ["--binary-gcode=0"] : [];
       const postProcessArgs = args.allow_post_process ? [] : ["--post-process", ""];
 
+      // 2.x takes settings as command line options. 3.0 ignores them: everything goes into one
+      // config file, made from the presets (or the project) with the changes in it.
+      const patchConfig = info.backend.patchConfig;
+      const baseConfig = patchConfig
+        ? await slicer.savedConfigText(projectFile && !explicit ? [projectFile] : slicer.presetArgs(requested!))
+        : null;
+      const fixed = new Map<string, string>();
+      if (!args.allow_post_process) fixed.set("post_process", "");
+      if (format !== "auto") fixed.set("binary_gcode", format === "binary" ? "1" : "0");
+      if (projectStem) fixed.set("output_filename_format", "project.gcode");
+      const patchedConfig = patchConfig && baseConfig ? patchConfig(baseConfig, new Map([...requestedOverrides, ...fixed]), catalog) : null;
+
       const result = await withStaging(destDir, async (staging) => {
+        const configPath = join(staging, "slice-config.json");
+        if (patchedConfig) await writeFile(configPath, patchedConfig);
+        const settingArgs = patchedConfig ? ["--load", configPath] : [...presetArgs, ...overrides.args, ...formatArgs, ...postProcessArgs];
         const run = await slicer.sliceQueue.run(() =>
           slicer.run(
             [
               "--export-gcode",
-              ...presetArgs,
-              ...overrides.args,
-              ...formatArgs,
-              ...postProcessArgs,
+              ...settingArgs,
               ...transformArgs(args.transforms),
               "--loglevel",
               "2",
@@ -143,7 +160,27 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         return { final, run };
       });
 
-      const { report } = await readGcode(result.final);
+      const { report, config: gcodeConfig } = await readGcode(result.final);
+      // 3.0 ignores settings it does not take, without an error or a changed exit code. Every
+      // override is read back from the G-code's own config block.
+      // 3.0.0-alpha14's CLI writes ASCII G-code whatever binary_gcode, --binary-gcode or the file
+      // name say. A file that is not what was asked for is removed, not handed over under a wrong name.
+      if (format === "binary" && report.format !== "binary") {
+        await unlink(result.final).catch(() => undefined);
+        throw new Refusal(
+          `Binary G-code was asked for, but ${info.help.version} wrote ${report.format} G-code. Use gcode_format "ascii" (or "auto"). The file was removed.`,
+        );
+      }
+      let overrideCheck: ReturnType<typeof compareOverrides> | undefined;
+      if (baseConfig && requestedOverrides.size) {
+        overrideCheck = compareOverrides(requestedOverrides, info.backend.parseSavedConfig(baseConfig), gcodeConfig);
+        if (overrideCheck.ignored.length) {
+          await unlink(result.final).catch(() => undefined);
+          throw new Refusal(
+            `PrusaSlicer did not apply ${overrideCheck.ignored.map((entry) => `${entry.key} (asked ${entry.requested}, G-code has ${entry.found})`).join("; ")}. The G-code was removed.`,
+          );
+        }
+      }
       // PrusaSlicer 2.9 silently slices with the GUI's selection when a preset cannot be used.
       if (requested) {
         const used = { printer: report.presets.printer, print: report.presets.print, filament: report.presets.filament[0] ?? null };
@@ -160,6 +197,11 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         .map((line) => line.trim())
         .filter((line) => line && !NOISE.test(line))
         .slice(0, 30);
+      if (overrideCheck?.unverified.length) {
+        messages.push(
+          `Not confirmed in the G-code config: ${overrideCheck.unverified.map((entry) => `${entry.key} (asked ${entry.requested}, G-code has ${entry.found ?? "no such key"})`).join("; ")}.`,
+        );
+      }
       let spool: Record<string, unknown> | undefined;
       if (args.spool_id !== undefined) {
         const found = await (await spoolman(account)).getSpool(args.spool_id);
@@ -187,6 +229,7 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         output: result.final,
         presets,
         overrides: overrides.keys.length ? overrides.keys : undefined,
+        overrides_confirmed: overrideCheck ? overrideCheck.confirmed : undefined,
         transforms: args.transforms,
         post_process: args.allow_post_process ? "allowed" : "disabled",
         messages: messages.length ? messages : undefined,

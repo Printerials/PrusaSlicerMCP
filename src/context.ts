@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { copyFile, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
-import { parseHelp, parseHelpFff, type HelpInfo, type SettingInfo } from "./formats/help.ts";
+import { parseHelp, type HelpInfo, type SettingInfo } from "./formats/help.ts";
 import { parseIniConfig, splitList, unescapeValue, type FlatConfig } from "./formats/ini.ts";
 import type { AppState, Backend, ProfilesListing } from "./slicer/backend.ts";
 import { EMPTY_APP_STATE } from "./slicer/backend.ts";
@@ -104,15 +104,24 @@ export class SlicerContext {
     return runSlicer(info.binary.path, full, { timeoutMs: QUERY_TIMEOUT, ...options });
   }
 
-  private async queryJson(args: string[], what: string): Promise<unknown> {
-    const result = await this.run(args);
+  /** Runs a --query-* command and parses its JSON. 3.0 writes it to a file: its stdout is full of log lines. */
+  private async queryJson(args: string[], what: string, options: { datadir?: string } = {}): Promise<unknown> {
+    const info = await this.info();
+    if (info.backend.queryToFile) {
+      const dir = await mkdtemp(join(tmpdir(), "prusaslicer-mcp-"));
+      try {
+        const out = join(dir, "query.json");
+        const result = await this.run([...args, "--output", out], options);
+        if (!existsSync(out)) throw new Refusal(describeFailure(result, what));
+        return parseJson(await readFile(out, "utf8"), what);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+    const result = await this.run(args, options);
     const start = result.stdout.indexOf("{");
     if (start === -1) throw new Refusal(describeFailure(result, what));
-    try {
-      return JSON.parse(result.stdout.slice(start));
-    } catch {
-      throw new Refusal(`${what}: PrusaSlicer returned output that is not JSON.\n${result.stdout.slice(0, 500)}`);
-    }
+    return parseJson(result.stdout.slice(start), what);
   }
 
   /** After the installed profiles change: every listing and resolved config may differ. */
@@ -129,13 +138,29 @@ export class SlicerContext {
     return value;
   }
 
-  /** Settings the CLI accepts as overrides, from --help-fff. */
+  /** Settings a slice accepts as overrides: --help-fff for 2.x, the exported schema for 3.0. */
   catalog(): Promise<Map<string, SettingInfo>> {
     this.catalogPromise ??= (async () => {
-      const result = await this.run(["--help-fff"]);
-      const entries = parseHelpFff(result.stdout + result.stderr);
-      if (entries.length === 0) throw new Refusal(describeFailure(result, "Reading the settings catalogue"));
-      return new Map(entries.map((entry) => [entry.key, entry]));
+      const { catalog } = (await this.info()).backend;
+      const dir = catalog.toFile ? await mkdtemp(join(tmpdir(), "prusaslicer-mcp-")) : null;
+      try {
+        const out = dir ? join(dir, "catalog.json") : "";
+        const result = await this.run(catalog.args(out));
+        // Exit codes are not trusted: 3.0 logs a missing bed model and still writes the file.
+        const text = dir ? (existsSync(out) ? await readFile(out, "utf8") : "") : result.stdout + result.stderr;
+        let entries: SettingInfo[] = [];
+        try {
+          entries = text ? catalog.parse(text) : [];
+        } catch {
+          // reported below, with PrusaSlicer's own output
+        }
+        if (entries.length === 0) throw new Refusal(describeFailure(result, "Reading the settings catalogue"));
+        const byKey = new Map<string, SettingInfo>();
+        for (const entry of entries) if (!byKey.has(entry.key)) byKey.set(entry.key, entry);
+        return byKey;
+      } finally {
+        if (dir) await rm(dir, { recursive: true, force: true });
+      }
     })().catch((error) => {
       this.catalogPromise = null;
       throw error;
@@ -207,7 +232,14 @@ export class SlicerContext {
     const filledIn: string[] = [];
 
     const printer = partial.printer ?? state.presets.printer;
-    if (!printer) throw new Refusal("No printer given and none is selected in PrusaSlicer. list_printers shows the installed ones.");
+    if (!printer) {
+      const info = await this.info();
+      throw new Refusal(
+        info.backend.keepsGuiSelection
+          ? "No printer given and none is selected in PrusaSlicer. list_printers shows the installed ones."
+          : "No printer given. PrusaSlicer 3.0 does not keep its selected presets where this server can read them, so give printer, print and filament. list_printers and list_profiles show the names.",
+      );
+    }
     if (!partial.printer) filledIn.push("printer");
     const printers = await this.printerNames();
     if (!printers.includes(printer)) {
@@ -324,10 +356,7 @@ export class SlicerContext {
     return this.cached(`available-models:${technology}`, () =>
       this.withEverythingInstalled(async (datadir) => {
         const args = ["--query-printer-models", ...(technology === "SLA" ? ["--printer-technology", "SLA"] : [])];
-        const result = await this.run(args, { datadir });
-        const start = result.stdout.indexOf("{");
-        if (start === -1) throw new Refusal(describeFailure(result, "Listing available printers"));
-        const data = JSON.parse(result.stdout.slice(start)) as { printer_models?: RawModel[] };
+        const data = (await this.queryJson(args, "Listing available printers", { datadir })) as { printer_models?: RawModel[] };
         return (data.printer_models ?? []).map(normalizeModel);
       }),
     );
@@ -343,10 +372,9 @@ export class SlicerContext {
     return this.cached(`available-filaments:${printer}`, () =>
       this.withEverythingInstalled(async (datadir) => {
         const info = await this.info();
-        const result = await this.run(info.backend.profilesQueryArgs(printer), { datadir });
-        const start = result.stdout.indexOf("{");
-        if (start === -1) throw new Refusal(describeFailure(result, `Listing filaments for ${printer}`));
-        const listing = info.backend.parseProfilesQuery(JSON.parse(result.stdout.slice(start)));
+        const listing = info.backend.parseProfilesQuery(
+          await this.queryJson(info.backend.profilesQueryArgs(printer), `Listing filaments for ${printer}`, { datadir }),
+        );
         return [...new Set(listing.prints.flatMap((print) => print.filaments))].sort();
       }),
     );
@@ -356,22 +384,39 @@ export class SlicerContext {
     return ["--printer-profile", presets.printer, "--print-profile", presets.print, "--material-profile", presets.filament];
   }
 
+  /**
+   * The config PrusaSlicer builds from the given arguments (presets, or a project file), as
+   * --save writes it: INI for 2.x, JSON for 3.0. Not cached: it is the base of a slice.
+   */
+  async savedConfigText(args: string[]): Promise<string> {
+    const info = await this.info();
+    const dir = await mkdtemp(join(tmpdir(), "prusaslicer-mcp-"));
+    try {
+      const out = join(dir, info.backend.major >= 3 ? "config.json" : "config.ini");
+      const result = await this.run([...args, ...info.backend.saveConfigArgs(out)]);
+      if (!existsSync(out)) throw new Refusal(describeFailure(result, "Resolving the presets"));
+      return await readFile(out, "utf8");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
   /** The complete config PrusaSlicer builds from three presets: inheritance and conditions resolved. */
   resolveConfig(presets: Presets): Promise<FlatConfig> {
     return this.cached(`config:${presets.printer}\u0000${presets.print}\u0000${presets.filament}`, async () => {
       const info = await this.info();
-      const dir = await mkdtemp(join(tmpdir(), "prusaslicer-mcp-"));
-      try {
-        const out = join(dir, info.backend.major >= 3 ? "config.json" : "config.ini");
-        const result = await this.run([...this.presetArgs(presets), ...info.backend.saveConfigArgs(out)]);
-        if (!existsSync(out)) throw new Refusal(describeFailure(result, "Resolving the presets"));
-        const config = info.backend.parseSavedConfig(await readFile(out, "utf8"));
-        assertPresetsUsed(config, presets, info.backend);
-        return config;
-      } finally {
-        await rm(dir, { recursive: true, force: true });
-      }
+      const config = info.backend.parseSavedConfig(await this.savedConfigText(this.presetArgs(presets)));
+      assertPresetsUsed(config, presets, info.backend);
+      return config;
     });
+  }
+}
+
+function parseJson(text: string, what: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Refusal(`${what}: PrusaSlicer returned output that is not JSON.\n${text.slice(0, 500)}`);
   }
 }
 

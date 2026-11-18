@@ -7,7 +7,7 @@ PrusaSlicer is the source of truth. Profiles, compatibility, inheritance, slicin
 ## Requirements
 
 - Node.js 24 or newer
-- PrusaSlicer 2.9. It is found in `/Applications`, `/Applications/Original Prusa Drivers`, `~/Applications`, `Program Files\Prusa3D\PrusaSlicer`, or on `PATH`. 3.0 support exists but is experimental; see below.
+- PrusaSlicer 2.9. It is found in `/Applications`, `/Applications/Original Prusa Drivers`, `~/Applications`, `Program Files\Prusa3D\PrusaSlicer`, or on `PATH`. 3.0 (alpha) works for slicing and profile queries but is experimental; see below.
 - For the GUI tools, macOS or Windows.
   - On macOS, the app that runs the server needs **Screen Recording** permission, for window titles and screenshots.
   - It also needs **Files and Folders** permission to read from `~/Downloads`, `~/Documents` or `~/Desktop`.
@@ -137,7 +137,19 @@ These were verified against PrusaSlicer 2.9.7 on macOS, and the server is built 
 - The data directory is `PrusaSlicer3` (`-dev` for alphas and betas).
 - The profile query is now `--query-print-tool-filament-profiles`.
 
-The server picks a backend from the binary's version (`src/slicer/v2.ts`, `src/slicer/v3.ts`) and recognizes 3.0 files by their content, also next to a 2.9 install. The 3.0 backend was written from the 3.0.0-alpha14 source. It is covered by unit tests on data shaped after that source, but it has not run against a 3.0 binary yet, and `slicer_status` says so.
+The server picks a backend from the binary's version (`src/slicer/v2.ts`, `src/slicer/v3.ts`) and recognizes 3.0 files by their content, also next to a 2.9 install. Point `PRUSASLICER_PATH` at the 3.0 app: the auto-detection looks for `PrusaSlicer.app` only, so it finds the 2.9 first.
+
+The 3.0 backend was checked against **3.0.0-alpha14 on macOS (2026-11-17)**: `slicer_status`, `list_printers`, `list_profiles`, `describe_setting`, `slice` of models and of a 3.0 project, with overrides. The unit tests use fixtures made by that binary (`test/fixtures/3.0.0-alpha14`); `test/integration-v3.test.ts` runs when `PRUSASLICER_PATH` is a 3.x. What alpha14 does differently, as measured:
+
+- **Settings given as command line options are ignored, with exit code 0.** `--thick-bridges=1` changes nothing, and so does a `--load` next to presets; `--load` may be given once. Only a complete config in the format `--save` writes works. So `slice` saves the config of the presets (or of the project), changes the values in it (`src/slicer/v3-config.ts`, typed and range checked by the schema) and slices with that file. The fixed switches (`post_process` off, `output_filename_format` for projects) go the same way.
+- **Every override is read back** from the G-code's config block. A value that still has its old value is refused and the G-code removed; a value the header does not show is reported in `messages`. `overrides_confirmed` lists what was confirmed.
+- **No settings list in `--help-fff`.** The catalogue comes from `--export-config-schema`: types, ranges, enum values and the section of each setting, but no descriptions (`describe_setting` shows none for 3.0).
+- **Profile queries print their JSON between log lines.** The server has them write to a file (`--output`).
+- **Unknown presets are refused by PrusaSlicer** (exit 1), not replaced by the GUI's selection as in 2.9.
+- **The app config does not say which presets the GUI has selected.** `slice` and `get_config` need printer, print and filament; the server says so when they are missing.
+- **The CLI writes ASCII G-code only**, whatever `binary_gcode`, `--binary-gcode` or the file name say. `gcode_format: "binary"` and a `.bgcode` output are refused instead of producing a mislabeled file.
+- **The G-code header has empty `printer_settings_id`, `print_settings_id` and `filament_settings_id`**, and shows `retract_lift = 0` where the config says 0.2, the same for presets and for `--load`. Time and filament use are the slicer's own numbers, but compare a lift-dependent result with 2.9 before trusting it.
+- Not covered for 3.0: `install_profiles` and `find_profiles` (they refuse), user presets in `list_printers` (3.0 keeps them elsewhere), and `edit_project` (written for the 2.x config format, not tried on a 3.0 project).
 
 ## Development
 

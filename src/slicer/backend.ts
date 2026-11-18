@@ -1,3 +1,4 @@
+import type { SettingInfo } from "../formats/help.ts";
 import type { FlatConfig } from "../formats/ini.ts";
 
 /**
@@ -9,6 +10,21 @@ export interface Backend {
   major: number;
   /** True while the backend is built from the source but not run against a real binary. */
   experimental: boolean;
+  /** How to read the catalogue of settings a slice can override. 2.x prints it, 3.0 writes it to a file. */
+  catalog: {
+    /** True when the command writes the catalogue to the file given, false when it prints it. */
+    toFile: boolean;
+    args(outputPath: string): string[];
+    parse(text: string): SettingInfo[];
+  };
+  /** True when --query-* output must be written with -o: 3.0 mixes its log lines into stdout. */
+  queryToFile: boolean;
+  /**
+   * Null when settings can be given as command line options (2.x). 3.0 ignores them without a word:
+   * its settings go into a config file given with --load. The function takes the config that
+   * saveConfigArgs wrote and returns it with the changes made, values as the CLI would take them.
+   */
+  patchConfig: ((savedConfig: string, changes: ReadonlyMap<string, string>, catalog: ReadonlyMap<string, SettingInfo>) => string) | null;
   /** Where PrusaSlicer keeps presets and its app config, or null when it is not there. */
   defaultDatadir(): string | null;
   /** Arguments that list the print and filament profiles compatible with a printer, as JSON. */
@@ -17,6 +33,8 @@ export interface Backend {
   /** Arguments that write the resolved config of the given presets to a file. */
   saveConfigArgs(outputPath: string): string[];
   parseSavedConfig(text: string): FlatConfig;
+  /** True when the app config says which presets the GUI has selected (3.0 does not keep that). */
+  keepsGuiSelection: boolean;
   readAppState(datadir: string): Promise<AppState>;
   /** The config keys holding the names of the presets a config came from. */
   presetIdKeys: { printer: string; print: string; filament: string };
