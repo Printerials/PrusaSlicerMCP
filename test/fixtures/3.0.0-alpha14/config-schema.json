@@ -178,6 +178,32 @@
      "MacroSlotOverrides"
     ],
     "value": 0.0
+   },
+   {
+    "name": "travel_ramping_lift",
+    "max": null,
+    "min": null,
+    "type": "Bool",
+    "location": "Print",
+    "overrides_in": [
+     "Tool",
+     "Filament",
+     "MacroSlotOverrides"
+    ],
+    "value": false
+   },
+   {
+    "name": "travel_max_lift",
+    "max": null,
+    "min": 0.0,
+    "type": "Float",
+    "location": "Print",
+    "overrides_in": [
+     "Tool",
+     "Filament",
+     "MacroSlotOverrides"
+    ],
+    "value": 0.0
    }
   ]
  },

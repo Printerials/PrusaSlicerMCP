@@ -16,7 +16,7 @@ import { after, before, describe, test } from "node:test";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { locateSlicer } from "../src/slicer/locate.ts";
-import { benchy, liftedMoves, movedStl } from "./helpers/models.ts";
+import { benchy, liftedMoves, lifts, movedStl } from "./helpers/models.ts";
 
 const root = join(import.meta.dirname, "..");
 
@@ -134,6 +134,32 @@ for (const target of targets) {
       const lifts = liftedMoves(gcode);
       assert.ok(lifts > 1000, `only ${lifts} lifted moves`);
       sliced.set(target.version, { grams: report.filament.total_g, seconds: report.time.normal_seconds, lifts });
+    });
+
+    test("lift settings reach the G-code past the filament's own overrides", async (t) => {
+      if (!presets) return t.skip("no presets");
+      // Buddy3D PETG overrides the travel lift settings in its filament profile (ramping lift on),
+      // and that override wins over the print setting: the server has to set both.
+      const profiles = await call("list_profiles", { printer: presets.printer });
+      const buddy = (profiles.data.filament_profiles_for_all_prints as string[]).find((name) => /^Buddy3D PETG ?@/.test(name));
+      if (!buddy) return t.skip("Buddy3D PETG is not installed");
+      const share04 = (gcode: string) => {
+        const heights = lifts(gcode);
+        const total = [...heights.values()].reduce((sum, count) => sum + count, 0);
+        return (heights.get(0.4) ?? 0) / total;
+      };
+      const plain = join(dir, "buddy.gcode");
+      const viaPrint = await call("slice", { inputs: [input], ...presets, filament: buddy, gcode_format: "ascii", output: plain, overrides: { travel_ramping_lift: false, retract_lift: 0.4 } });
+      assert.equal(viaPrint.isError, false, viaPrint.text);
+      assert.ok((viaPrint.data.messages ?? []).some((line: string) => /travel_ramping_lift: the filament profile overrides it/.test(line)), JSON.stringify(viaPrint.data.messages));
+      assert.ok(share04(await readFile(plain, "utf8")) > 0.95, "the lifts are not 0.4 mm: the filament's ramping lift won");
+      const named = join(dir, "buddy-filament-keys.gcode");
+      const viaFilament = await call("slice", {
+        inputs: [input], ...presets, filament: buddy, gcode_format: "ascii", output: named,
+        overrides: { filament_travel_ramping_lift: false, filament_retract_lift: 0.4 },
+      });
+      assert.equal(viaFilament.isError, false, viaFilament.text);
+      assert.ok(share04(await readFile(named, "utf8")) > 0.95, "filament_* overrides did not reach the G-code");
     });
 
     test("postprocess_gcode: a pause at layer 50", async (t) => {

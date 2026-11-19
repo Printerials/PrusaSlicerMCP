@@ -1,5 +1,7 @@
 import type { SettingInfo } from "../formats/help.ts";
 import type { FlatConfig } from "../formats/ini.ts";
+import type { PatchResult } from "./v3-config.ts";
+import type { AppliedCheck } from "./verify.ts";
 
 /**
  * What differs between PrusaSlicer majors. 2.x stores configs as INI and its app state in
@@ -24,7 +26,9 @@ export interface Backend {
    * its settings go into a config file given with --load. The function takes the config that
    * saveConfigArgs wrote and returns it with the changes made, values as the CLI would take them.
    */
-  patchConfig: ((savedConfig: string, changes: ReadonlyMap<string, string>, catalog: ReadonlyMap<string, SettingInfo>) => string) | null;
+  patchConfig: ((savedConfig: string, changes: ReadonlyMap<string, string>, catalog: ReadonlyMap<string, SettingInfo>) => PatchResult) | null;
+  /** With patchConfig: what PrusaSlicer saved back after loading the patched config, against what was written. */
+  checkPatched: ((loadedConfig: string, targets: PatchResult["targets"]) => AppliedCheck) | null;
   /** Where PrusaSlicer keeps presets and its app config, or null when it is not there. */
   defaultDatadir(): string | null;
   /** Arguments that list the print and filament profiles compatible with a printer, as JSON. */

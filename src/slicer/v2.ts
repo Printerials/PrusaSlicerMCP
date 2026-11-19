@@ -13,6 +13,7 @@ export const v2Backend: Backend = {
   catalog: { toFile: false, args: () => ["--help-fff"], parse: parseHelpFff },
   queryToFile: false,
   patchConfig: null,
+  checkPatched: null,
   keepsGuiSelection: true,
   infoBoundsIncludeOrigin: false,
   exportArranges: false,

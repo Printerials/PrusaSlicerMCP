@@ -3,12 +3,12 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { parseConfigSchema, type SettingInfo } from "../../src/formats/help.ts";
+import { parseConfigSchema, parseHelpFff, type SettingInfo } from "../../src/formats/help.ts";
 import { splitList, unescapeValue } from "../../src/formats/ini.ts";
 import { assertPresetsUsed } from "../../src/context.ts";
-import { patchSavedConfig } from "../../src/slicer/v3-config.ts";
+import { checkPatched, patchSavedConfig } from "../../src/slicer/v3-config.ts";
+import { filamentShadows } from "../../src/tools/args.ts";
 import { v3Backend } from "../../src/slicer/v3.ts";
-import { checkApplied } from "../../src/slicer/verify.ts";
 import { stlBounds } from "../../src/formats/stl.ts";
 import { readProject } from "../../src/formats/threemf.ts";
 import { writeZip } from "../helpers/zip.ts";
@@ -22,8 +22,9 @@ async function catalog(): Promise<Map<string, SettingInfo>> {
   return new Map(parseConfigSchema(await read("config-schema.json")).map((entry) => [entry.key, entry]));
 }
 
-function section(config: string, name: string): Record<string, unknown> {
-  return (JSON.parse(config) as { configuration: Record<string, Record<string, unknown>> }).configuration[name]!;
+function section(config: string | { config: string }, name: string): Record<string, unknown> {
+  const text = typeof config === "string" ? config : config.config;
+  return (JSON.parse(text) as { configuration: Record<string, Record<string, unknown>> }).configuration[name]!;
 }
 
 test("schema export: the settings catalogue of 3.0", async () => {
@@ -106,28 +107,66 @@ test("profile and model queries of alpha14 parse", async () => {
   assert.equal(listing.prints[0]!.filaments.length, 4);
 });
 
-test("applied check: what PrusaSlicer saves back after loading the written config", async () => {
-  const backend = v3Backend(true);
+test("filament layer: an override goes wherever the setting is held, since the filament's wins", async () => {
+  // Prusament PLA in alpha14 overrides travel_ramping_lift, travel_max_lift and travel_slope.
   const saved = await read("saved-config.json");
   const settings = await catalog();
-  const changes = new Map([
-    ["thick_bridges", "1"],
-    ["fill_density", "25"],
-    ["retract_lift", "0.4"],
-    ["post_process", ""],
+  assert.deepEqual(section(saved, "filament_settings").travel_ramping_lift, [true]);
+  const patched = patchSavedConfig(saved, new Map([["travel_ramping_lift", "0"], ["retract_lift", "0.4"]]), settings);
+  assert.equal(section(patched, "print_settings").travel_ramping_lift, false);
+  assert.deepEqual(section(patched, "filament_settings").travel_ramping_lift, [false]);
+  // retract_lift is not overridden by this filament: the print setting alone decides.
+  assert.equal(section(patched, "print_settings").retract_lift, 0.4);
+  assert.equal(section(patched, "filament_settings").retract_lift, undefined);
+  assert.deepEqual(patched.targets.get("travel_ramping_lift")!.map((target) => target.section), ["print_settings", "filament_settings"]);
+  assert.equal(patched.notes.length, 1);
+  assert.match(patched.notes[0]!, /travel_ramping_lift: the filament profile overrides it \(it had \[true\]\)/);
+});
+
+test("filament_<key>, the 2.x name, sets or adds the filament override only", async () => {
+  const saved = await read("saved-config.json");
+  const settings = await catalog();
+  assert.equal(settings.get("filament_retract_lift")?.aliasOf, "retract_lift");
+  assert.equal(settings.has("filament_temperature"), false, "a filament setting has no alias");
+  const patched = patchSavedConfig(saved, new Map([["filament_retract_lift", "0.4"], ["filament_travel_ramping_lift", "false"]]), settings);
+  assert.deepEqual(section(patched, "filament_settings").retract_lift, [0.4]);
+  assert.deepEqual(section(patched, "filament_settings").travel_ramping_lift, [false]);
+  assert.equal(section(patched, "print_settings").retract_lift, 0.2, "the print setting stays");
+  assert.deepEqual(patched.notes, []);
+});
+
+test("read back per layer: a merged view would have called a shadowed value confirmed", async () => {
+  const saved = await read("saved-config.json");
+  const patched = patchSavedConfig(saved, new Map([["travel_ramping_lift", "0"], ["fill_density", "25%"], ["post_process", ""]]), await catalog());
+  assert.deepEqual(checkPatched(patched.config, patched.targets), { confirmed: ["travel_ramping_lift", "fill_density", "post_process"], rejected: [], missing: [] });
+  // As if PrusaSlicer kept the filament's override and replaced fill_density.
+  const loaded = JSON.parse(patched.config);
+  loaded.configuration.filament_settings.travel_ramping_lift = [true];
+  loaded.configuration.print_settings.fill_density = { value: 15, is_percent: true };
+  delete loaded.configuration.print_settings.post_process;
+  const check = checkPatched(JSON.stringify(loaded), patched.targets);
+  assert.deepEqual(check.confirmed, []);
+  assert.deepEqual(check.rejected.map((entry) => `${entry.key} ${entry.layer} ${entry.found}`), [
+    "travel_ramping_lift filament_settings [true]",
+    "fill_density print_settings {\"value\":15,\"is_percent\":true}",
   ]);
-  const written = backend.parseSavedConfig(patchSavedConfig(saved, changes, settings));
-  // As if PrusaSlicer loaded it all, but replaced fill_density.
-  const loaded = new Map(written);
-  loaded.set("fill_density", "15%");
-  loaded.delete("retract_lift");
-  const check = checkApplied(changes.keys(), written, loaded);
-  assert.deepEqual(check.confirmed, ["thick_bridges", "post_process"]);
-  assert.deepEqual(check.rejected, [{ key: "fill_density", expected: "25%", found: "15%" }]);
-  assert.deepEqual(check.missing, ["retract_lift"]);
-  // A value that equals the old one is fine when it was asked for: the G-code header was no judge.
-  const same = backend.parseSavedConfig(patchSavedConfig(saved, new Map([["retract_lift", "0.2"]]), settings));
-  assert.deepEqual(checkApplied(["retract_lift"], same, same).confirmed, ["retract_lift"]);
+  assert.deepEqual(check.missing, ["post_process (print_settings)"]);
+});
+
+test("2.x: an override also sets filament_<key> when the filament profile overrides it", async () => {
+  const fff = new Map(parseHelpFff(await readFile(join(import.meta.dirname, "..", "fixtures", "help-fff-2.9.7.txt"), "utf8")).map((e) => [e.key, e]));
+  // As Buddy3D PETG @COREONE HF0.4 resolves in 2.9.7.
+  const config = new Map([
+    ["travel_ramping_lift", "1"],
+    ["filament_travel_ramping_lift", "1"],
+    ["retract_lift", "0.2"],
+    ["filament_retract_lift", "nil"],
+  ]);
+  const shadows = filamentShadows(new Map([["travel_ramping_lift", "0"], ["retract_lift", "0.4"], ["fill_density", "20%"]]), config, fff);
+  assert.deepEqual([...shadows.extra], [["filament_travel_ramping_lift", "0"]]);
+  assert.match(shadows.notes[0]!, /filament_travel_ramping_lift = 1/);
+  // Given explicitly, it is left alone.
+  assert.equal(filamentShadows(new Map([["travel_ramping_lift", "0"], ["filament_travel_ramping_lift", "1"]]), config, fff).extra.size, 0);
 });
 
 test("STL bounds: binary and ASCII, at any position", async () => {

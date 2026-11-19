@@ -1,50 +1,31 @@
-import { splitList, unescapeValue, type FlatConfig } from "../formats/ini.ts";
-
-export interface AppliedCheck {
-  /** PrusaSlicer loaded the value that was written. */
-  confirmed: string[];
-  /** PrusaSlicer loaded another value: it replaced, clamped or ignored the one written. */
-  rejected: Array<{ key: string; expected: string; found: string }>;
-  /** Not in what PrusaSlicer saved back. */
-  missing: string[];
-}
-
 /**
- * Compares the config written for a slice with what PrusaSlicer saves back after loading it
- * (--load written.json --save check.json). Both sides go through the same serializer, so a
- * difference is PrusaSlicer's doing.
+ * Whether PrusaSlicer took the values written for a slice. 3.0 ignores what it does not take
+ * without an error, so before slicing PrusaSlicer loads the written config and saves it again
+ * (--load written.json --save check.json), and the two are compared per section (checkPatched in
+ * v3-config.ts).
  *
  * Not the G-code header: in 3.0.0-alpha14 it is not faithful for every key. A 3DBenchy lifts the
  * nozzle as often as with 2.9.7 while the header shows retract_lift, travel_max_lift and
  * travel_ramping_lift as 0 (measured 2026-11-19).
  */
-export function checkApplied(keys: Iterable<string>, written: FlatConfig, loaded: FlatConfig): AppliedCheck {
-  const check: AppliedCheck = { confirmed: [], rejected: [], missing: [] };
-  for (const key of keys) {
-    const expected = written.get(key);
-    const found = loaded.get(key);
-    if (expected === undefined || found === undefined) check.missing.push(key);
-    else if (same(found, expected)) check.confirmed.push(key);
-    else check.rejected.push({ key, expected, found });
+export interface AppliedCheck {
+  /** Every place the value was written holds it after loading. */
+  confirmed: string[];
+  /** PrusaSlicer loaded another value: it replaced, clamped or ignored the one written. */
+  rejected: Array<{ key: string; layer: string; expected: string; found: string }>;
+  /** Not in what PrusaSlicer saved back: "key (section)". */
+  missing: string[];
+}
+
+/** Deep equality of config values, with numbers compared to 1e-9 (PrusaSlicer re-serializes floats). */
+export function sameJson(a: unknown, b: unknown): boolean {
+  if (typeof a === "number" && typeof b === "number") return Math.abs(a - b) < 1e-9;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, index) => sameJson(value, b[index]));
   }
-  return check;
-}
-
-function same(a: string, b: string): boolean {
-  const left = parts(a);
-  const right = parts(b);
-  return left.length === right.length && left.every((value, index) => equal(value, right[index]!));
-}
-
-function parts(value: string): string[] {
-  const list = splitList(value.trim());
-  return list.length ? list : [unescapeValue(value.trim())];
-}
-
-function equal(a: string, b: string): boolean {
-  const x = a.trim();
-  const y = b.trim();
-  if (x === y) return true;
-  const numeric = (text: string) => (text !== "" && /^-?\d+(\.\d+)?%?$/.test(text) ? Number(text.replace("%", "")) : NaN);
-  return Math.abs(numeric(x) - numeric(y)) < 1e-9 && x.endsWith("%") === y.endsWith("%");
+  if (a && b && typeof a === "object" && typeof b === "object") {
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    return [...keys].every((key) => sameJson((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
+  }
+  return a === b;
 }

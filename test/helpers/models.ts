@@ -78,8 +78,13 @@ export async function movedStl(source: string, target: string, dx: number, dy: n
  * ramped or not. The G-code header is no judge of lifting in 3.0.0-alpha14.
  */
 export function liftedMoves(gcode: string): number {
+  return [...lifts(gcode).values()].reduce((sum, count) => sum + count, 0);
+}
+
+/** Lifted moves by height above the layer, in mm rounded to 0.01. */
+export function lifts(gcode: string): Map<number, number> {
   let layer: number | null = null;
-  let lifted = 0;
+  const heights = new Map<number, number>();
   for (const line of gcode.split("\n")) {
     if (line.startsWith(";Z:")) {
       layer = Number(line.slice(3));
@@ -87,7 +92,9 @@ export function liftedMoves(gcode: string): number {
     }
     if (layer === null || !line.startsWith("G1 ")) continue;
     const z = / Z(-?[\d.]+)/.exec(line);
-    if (z && Number(z[1]) - layer > 0.001) lifted++;
+    if (!z || Number(z[1]) - layer <= 0.001) continue;
+    const height = Math.round((Number(z[1]) - layer) * 100) / 100;
+    heights.set(height, (heights.get(height) ?? 0) + 1);
   }
-  return lifted;
+  return heights;
 }

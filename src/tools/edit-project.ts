@@ -14,6 +14,7 @@ import { describeFailure } from "../slicer/run.ts";
 import { Refusal } from "../util/errors.ts";
 import { commitFile, outputTarget, requireFile, stem, withStaging } from "../util/paths.ts";
 import { suggest } from "../util/suggest.ts";
+import { filamentShadows } from "./args.ts";
 import { json, tool, type ToolDeps } from "./common.ts";
 import { freeName } from "./slice.ts";
 
@@ -71,6 +72,7 @@ export function registerEditProject(server: McpServer, { slicer }: ToolDeps): vo
       const before: Presets = { printer, print, filament: filament[0] };
 
       const changes = new Map<string, string>();
+      const shadowNotes: string[] = [];
       const replacedModifications: string[] = [];
 
       // A preset switch takes over every value in which the new preset differs from the old one,
@@ -103,6 +105,15 @@ export function registerEditProject(server: McpServer, { slicer }: ToolDeps): vo
           }
           changes.set(key, serializeValue(rawValue));
         }
+        // A filament's filament_<key> wins over <key>: set it too, so the value asked for is the one that slices.
+        const effective: FlatConfig = new Map([...project.config, ...changes]);
+        const asked = new Map(Object.keys(args.settings).map((rawKey) => {
+          const key = rawKey.trim().replace(/^--/, "").replace(/-/g, "_");
+          return [key, changes.get(key)!] as const;
+        }));
+        const shadows = filamentShadows(asked, effective, catalog);
+        for (const [key, value] of shadows.extra) changes.set(key, value);
+        shadowNotes.push(...shadows.notes);
       }
 
       const configText = await (async () => {
@@ -164,6 +175,7 @@ export function registerEditProject(server: McpServer, { slicer }: ToolDeps): vo
         changed: describeChanges(changes, project.config),
         replaced_project_modifications: replacedModifications.length ? replacedModifications : undefined,
         opened,
+        also_set: shadowNotes.length ? shadowNotes : undefined,
         note: "The original project is unchanged. In PrusaSlicer the new values show as modified settings of the presets.",
       });
     },

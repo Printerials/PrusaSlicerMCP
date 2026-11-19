@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parseConfigSchema } from "../formats/help.ts";
 import type { FlatConfig } from "../formats/ini.ts";
 import { EMPTY_APP_STATE, type AppState, type Backend, type ProfilesListing } from "./backend.ts";
-import { patchSavedConfig } from "./v3-config.ts";
+import { checkPatched, patchSavedConfig } from "./v3-config.ts";
 
 /**
  * PrusaSlicer 3.x. Written from the 3.0.0-alpha14 source, then checked against the alpha14
@@ -30,6 +30,7 @@ export function v3Backend(prerelease: boolean): Backend {
     catalog: { toFile: true, args: (outputPath) => ["--export-config-schema", outputPath], parse: parseConfigSchema },
     queryToFile: true,
     patchConfig: patchSavedConfig,
+    checkPatched,
     keepsGuiSelection: false,
     infoBoundsIncludeOrigin: true,
     exportArranges: true,

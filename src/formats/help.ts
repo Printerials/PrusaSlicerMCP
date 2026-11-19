@@ -36,6 +36,13 @@ export interface SettingInfo {
   max?: number;
   /** The type PrusaSlicer 3.0 names for it: "Float", "FloatOrPercentage", "Enum", "Array"... */
   schemaType?: string;
+  /** 3.0: the layers that can override this setting ("Tool", "Filament", "Object"...). */
+  overridesIn?: string[];
+  /**
+   * 3.0: set for "filament_<key>", the 2.x name of a filament override. 3.0 keeps it as <key> in
+   * filament_settings; this entry stands for that layer only.
+   */
+  aliasOf?: string;
 }
 
 const VERSION = /PrusaSlicer-(\d+)\.(\d+)\.(\d+[^\s]*)/;
@@ -141,6 +148,7 @@ interface SchemaItem {
   max?: number | null;
   enum_values?: string[];
   value?: unknown;
+  overrides_in?: string[];
 }
 
 /**
@@ -164,8 +172,25 @@ export function parseConfigSchema(text: string): SettingInfo[] {
         min: item.min ?? undefined,
         max: item.max ?? undefined,
         schemaType: item.type,
+        overridesIn: item.overrides_in?.length ? item.overrides_in : undefined,
       });
     }
+  }
+  // The 2.x names of filament overrides (filament_retract_lift...), for settings a filament may
+  // override in 3.0. A filament's override wins over the print setting.
+  for (const entry of [...entries]) {
+    if (!entry.overridesIn?.includes("Filament") || entry.location === "filament_settings") continue;
+    const alias = `filament_${entry.key}`;
+    if (entries.some((other) => other.key === alias)) continue;
+    entries.push({
+      ...entry,
+      key: alias,
+      category: "Filament",
+      description: `The filament's override of ${entry.key}; it wins over the print setting.`,
+      location: "filament_settings",
+      overridesIn: undefined,
+      aliasOf: entry.key,
+    });
   }
   return entries;
 }

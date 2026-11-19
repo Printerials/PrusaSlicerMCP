@@ -9,10 +9,10 @@ import { splitList } from "../formats/ini.ts";
 import { spoolLabel, spoolPricePerKg } from "../spoolman/client.ts";
 import { spoolman } from "./filament.ts";
 import { describeFailure } from "../slicer/run.ts";
-import { checkApplied } from "../slicer/verify.ts";
+import type { AppliedCheck } from "../slicer/verify.ts";
 import { Refusal } from "../util/errors.ts";
 import { commitFile, exists, expandHome, outputTarget, requireFile, stem, withStaging } from "../util/paths.ts";
-import { checkOverrides, overrideArgs, overridesSchema, transformArgs, transformsSchema } from "./args.ts";
+import { checkOverrides, filamentShadows, overrideArgs, overridesSchema, transformArgs, transformsSchema } from "./args.ts";
 import { json, progressReporter, tool, WRITES_NEW_FILES, type ToolDeps } from "./common.ts";
 
 export const MODEL_EXTENSIONS = [".stl", ".3mf", ".obj", ".step", ".stp", ".amf"];
@@ -90,8 +90,13 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
 
       const info = await slicer.info();
       const catalog = await slicer.catalog();
-      const overrides = overrideArgs(args.overrides, catalog);
       const requestedOverrides = checkOverrides(args.overrides, catalog);
+      // 2.x: a filament's filament_<key> wins over <key>; the value asked for must be the one that slices.
+      const shadows =
+        info.backend.patchConfig || requestedOverrides.size === 0
+          ? { extra: new Map<string, string>(), notes: [] }
+          : filamentShadows(requestedOverrides, requested ? await slicer.resolveConfig(requested) : project!.config, catalog);
+      const overrides = overrideArgs({ ...args.overrides, ...Object.fromEntries(shadows.extra) }, catalog);
 
       // Output: a file name we pick, or the name PrusaSlicer derives from output_filename_format.
       let destDir = dirname(inputs[0]!);
@@ -127,25 +132,28 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
       if (format !== "auto") fixed.set("binary_gcode", format === "binary" ? "1" : "0");
       if (projectStem) fixed.set("output_filename_format", "project.gcode");
       const changes = new Map([...requestedOverrides, ...fixed]);
-      const patchedConfig = patchConfig && baseConfig ? patchConfig(baseConfig, changes, catalog) : null;
+      const patch = patchConfig && baseConfig ? patchConfig(baseConfig, changes, catalog) : null;
+      const patchedConfig = patch?.config ?? null;
 
       // 3.0 ignores what it does not take, without an error. Before slicing, PrusaSlicer loads the
-      // written config and saves it back; every changed value must come back as written.
-      let applied: ReturnType<typeof checkApplied> | undefined;
-      if (patchedConfig) {
+      // written config and saves it back; every value must come back as written, in every layer.
+      let applied: AppliedCheck | undefined;
+      if (patch && info.backend.checkPatched) {
         const dir = await mkdtemp(join(tmpdir(), "prusaslicer-mcp-"));
         try {
           const written = join(dir, "written.json");
-          await writeFile(written, patchedConfig);
-          const loaded = info.backend.parseSavedConfig(await slicer.savedConfigText(["--load", written]));
-          applied = checkApplied(changes.keys(), info.backend.parseSavedConfig(patchedConfig), loaded);
+          await writeFile(written, patch.config);
+          applied = info.backend.checkPatched(await slicer.savedConfigText(["--load", written]), patch.targets);
         } finally {
           await rm(dir, { recursive: true, force: true });
         }
         if (applied.rejected.length) {
           throw new Refusal("PrusaSlicer did not accept these values, so nothing was sliced.", {
             rejected: Object.fromEntries(
-              applied.rejected.map((entry) => [entry.key, { given: entry.expected, prusaslicer_used: entry.found, allowed: catalog.get(entry.key)?.values }]),
+              applied.rejected.map((entry) => [
+                `${entry.key} (${entry.layer})`,
+                { given: entry.expected, prusaslicer_used: entry.found, allowed: catalog.get(entry.key)?.values },
+              ]),
             ),
           });
         }
@@ -209,6 +217,7 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         .map((line) => line.trim())
         .filter((line) => line && !NOISE.test(line))
         .slice(0, 30);
+      messages.push(...shadows.notes, ...(patch?.notes ?? []));
       if (applied?.missing.length) {
         messages.push(`Not found in the config PrusaSlicer loaded, so not confirmed: ${applied.missing.join(", ")}.`);
       }

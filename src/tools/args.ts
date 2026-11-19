@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { SettingInfo } from "../formats/help.ts";
+import { splitList, type FlatConfig } from "../formats/ini.ts";
 import { Refusal } from "../util/errors.ts";
 import { suggest } from "../util/suggest.ts";
 
@@ -56,7 +57,9 @@ export const overridesSchema = z
   .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
   .describe(
     "Settings to change for this run only, as config key to value: { \"fill_density\": \"25%\", \"brim_width\": 5, \"support_material\": true }. " +
-      "Keys are those describe_setting knows. Lists (per extruder) are comma-separated.",
+      "Keys are those describe_setting knows. Lists (per extruder) are comma-separated. " +
+      "When the filament profile overrides a key (filament_<key>), its override is set to the same value, as it would win otherwise; " +
+      "filament_<key> sets only the filament's override.",
   );
 
 export type Overrides = z.infer<typeof overridesSchema>;
@@ -89,4 +92,28 @@ export function overrideArgs(overrides: Overrides | undefined, catalog: Readonly
     else args.push(`--${cli}=${value}`);
   }
   return { args, keys: [...checked.keys()] };
+}
+
+/**
+ * 2.x: a filament profile overrides some print and printer settings with filament_<key>, and a
+ * value that is not "nil" wins. Buddy3D PETG @COREONE HF0.4 has filament_travel_ramping_lift = 1,
+ * so --travel-ramping-lift=0 alone still slices with ramping lifts (2.9.7, 2026-11-19). An
+ * override of <key> therefore also goes to filament_<key> when the resolved config has one set.
+ */
+export function filamentShadows(
+  checked: ReadonlyMap<string, string>,
+  config: FlatConfig,
+  catalog: ReadonlyMap<string, SettingInfo>,
+): { extra: Map<string, string>; notes: string[] } {
+  const extra = new Map<string, string>();
+  const notes: string[] = [];
+  for (const [key, value] of checked) {
+    const shadow = `filament_${key}`;
+    if (key.startsWith("filament_") || checked.has(shadow) || !catalog.has(shadow)) continue;
+    const current = config.get(shadow);
+    if (current === undefined || splitList(current).every((item) => item === "nil" || item === "")) continue;
+    extra.set(shadow, value);
+    notes.push(`${key}: the filament profile overrides it (${shadow} = ${current}), so ${shadow} was set too.`);
+  }
+  return { extra, notes };
 }
