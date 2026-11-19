@@ -2,6 +2,7 @@ import type { SettingInfo } from "../formats/help.ts";
 import type { FlatConfig } from "../formats/ini.ts";
 import type { PatchResult } from "./v3-config.ts";
 import type { AppliedCheck } from "./verify.ts";
+import type { OpenProject } from "./v3-userdata.ts";
 
 /**
  * What differs between PrusaSlicer majors. 2.x stores configs as INI and its app state in
@@ -69,6 +70,10 @@ export interface AppState {
   lastOutputDir: string | null;
   /** Where the state came from, for the status report. */
   source: string | null;
+  /** 3.0: the GUI's backups of unsaved projects, newest first (its title shows no project). */
+  openProjects?: OpenProject[];
+  /** Where presets came from when not from the app config: 3.0 takes those of the open project. */
+  presetsFrom?: string;
 }
 
 export const EMPTY_APP_STATE: AppState = {

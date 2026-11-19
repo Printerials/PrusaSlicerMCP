@@ -66,7 +66,7 @@ export function registerProfiles(server: McpServer, { slicer }: ToolDeps): void 
       title: "List printers",
       description:
         "Printer presets installed in PrusaSlicer: vendor models with their variants (nozzles) and bed size, plus your own printer presets " +
-        "and physical printers. Only what was installed through the Configuration Wizard is listed.",
+        "and physical printers (names only). 2.x lists what was installed through the Configuration Wizard; 3.0 has no such list and shows every vendor profile.",
       inputSchema: z.object({
         technology: z.enum(["FFF", "SLA"]).default("FFF").describe("FFF (filament) or SLA (resin)."),
       }),

@@ -192,6 +192,7 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         }
       }
 
+      await slicer.assertOutsideDatadir(destDir);
       const result = await withStaging(destDir, async (staging) => {
         const configPath = join(staging, "slice-config.json");
         if (patchedConfig) await writeFile(configPath, patchedConfig);

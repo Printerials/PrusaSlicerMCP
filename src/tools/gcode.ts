@@ -12,7 +12,7 @@ import { freeName } from "./slice.ts";
 
 const GCODE_EXTENSIONS = [".gcode", ".bgcode", ".gco", ".g"];
 
-export function registerGcode(server: McpServer, _deps: ToolDeps): void {
+export function registerGcode(server: McpServer, { slicer }: ToolDeps): void {
   tool(
     server,
     "gcode_info",
@@ -104,6 +104,7 @@ export function registerGcode(server: McpServer, _deps: ToolDeps): void {
 
       const target = output ? await outputTarget(output, dirname(file), "") : null;
       const destDir = target ? dirname(target) : dirname(file);
+      await slicer.assertOutsideDatadir(destDir);
       const final = target ?? (await freeName(destDir, `${stem(file)}-edited.gcode`));
       const placed = await withStaging(destDir, async (staging) => {
         const staged = join(staging, basename(final));

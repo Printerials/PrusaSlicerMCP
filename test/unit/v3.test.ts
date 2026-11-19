@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,6 +9,7 @@ import { assertPresetsUsed } from "../../src/context.ts";
 import { checkPatched, patchSavedConfig } from "../../src/slicer/v3-config.ts";
 import { filamentShadows } from "../../src/tools/args.ts";
 import { stabilityOf } from "../../src/tools/slice.ts";
+import { backupName, readV3OpenProjects, readV3PhysicalPrinters, readV3UserPresets } from "../../src/slicer/v3-userdata.ts";
 import { existingIds, renderV3FilamentPreset, sameSetting, v3PresetTarget, v3Values, writeChecked } from "../../src/slicer/filament-preset-v3.ts";
 import { v3Backend } from "../../src/slicer/v3.ts";
 import { stlBounds } from "../../src/formats/stl.ts";
@@ -280,4 +281,44 @@ test("3.0 filament preset: resolved values against what was written", () => {
   assert.equal(sameSetting("1.240", "1.24"), true);
   assert.equal(sameSetting("220", "215"), false);
   assert.equal(sameSetting("other note", '"test note"'), false);
+});
+
+test("3.0 user data: own presets, physical printer names only, and the GUI's backups of unsaved projects", async () => {
+  const datadir = await mkdtemp(join(tmpdir(), "datadir3-"));
+  try {
+    const vendor = join(datadir, "presets", "user", "prusa-research-fff", "PrusaResearch");
+    await mkdir(vendor, { recursive: true });
+    await writeFile(
+      join(vendor, "filament-My PLA.yaml"),
+      renderV3FilamentPreset({ name: "My PLA", condition: "true", parentId: "Generic PLA", values: { temperature: 215 }, comment: "test" }),
+    );
+    // As the GUI writes a printer preset: unquoted scalars, variant name under "- id".
+    await writeFile(join(vendor, "printer-My CORE One.yaml"), "kind: printer\nid: abc\nvariants:\n- id: def\n  name: My CORE One\n  inherits: [COREONE]\n  values: {}\n");
+    assert.deepEqual(
+      (await readV3UserPresets(datadir, "filament")).map(({ name, inherits }) => ({ name, inherits })),
+      [{ name: "My PLA", inherits: "Generic PLA" }],
+    );
+    assert.deepEqual((await readV3UserPresets(datadir, "printer")).map((preset) => preset.name), ["My CORE One"]);
+    assert.deepEqual(await readV3UserPresets(datadir, "print"), []);
+
+    const physical = join(datadir, "physical_printer");
+    await mkdir(physical);
+    await writeFile(
+      join(physical, "0b6c.json"),
+      JSON.stringify({ physical_printer_user_given_name: "Workshop CORE One", physical_printer_host: "192.0.2.10", physical_printer_api_key: "secret", physical_printer_password: "secret" }),
+    );
+    assert.deepEqual(await readV3PhysicalPrinters(datadir), ["Workshop CORE One"]);
+
+    const backups = join(datadir, "backup_projects");
+    await mkdir(backups);
+    await writeZip(join(backups, "a1b2c3_d4e5f6_bracket.3mf"), { "Metadata/PrusaSlicer3_project.json": await read("project.json") });
+    const open = await readV3OpenProjects(datadir);
+    assert.equal(open.length, 1);
+    assert.equal(open[0]!.name, "bracket");
+    assert.equal(open[0]!.objects, 1);
+    assert.deepEqual(open[0]!.presets, { printer: "Prusa CORE One & One+ 0.4 HF", print: "0.15mm BALANCED @COREONE 0.4HF", filament: ["Prusament PLA @COREONE HF0.4@COREONE 0.4"] });
+    assert.equal(backupName("a1b2c3_d4e5f6_my_project_v2.3mf"), "my_project_v2");
+  } finally {
+    await rm(datadir, { recursive: true, force: true });
+  }
 });

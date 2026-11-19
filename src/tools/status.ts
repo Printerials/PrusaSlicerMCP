@@ -12,7 +12,8 @@ export function registerStatus(server: McpServer, { slicer, account }: ToolDeps)
       title: "PrusaSlicer status",
       description:
         "Start here. Which PrusaSlicer is installed (path, version, data directory), the printer/print/filament presets currently selected in it, " +
-        "recent projects, whether the GUI is running with which project open (and unsaved changes), and where spools come from (Printerials account or Spoolman).",
+        "recent projects, whether the GUI is running with which project open (and unsaved changes), and where spools come from (Printerials account or Spoolman). " +
+          "PrusaSlicer 3.0 keeps no selection and shows no project name; there the unsaved project open in its GUI is read from its own backup, and its presets count as the selection.",
       inputSchema: z.object({}),
       annotations: READ_ONLY,
     },
@@ -25,8 +26,21 @@ export function registerStatus(server: McpServer, { slicer, account }: ToolDeps)
         account.state().catch((error: unknown) => ({ status: "unknown", problem: error instanceof Error ? error.message : String(error) })),
       ]);
 
-      let project: { name: string | null; path: string | null; unsaved: boolean } | null = null;
-      if (window.title) {
+      let project: { name: string | null; path: string | null; unsaved: boolean; objects?: number; modified?: string; note?: string } | null = null;
+      if (state.openProjects) {
+        // 3.0: the title is always the build id. The GUI's backup of the unsaved project tells what is open.
+        const open = window.running ? state.openProjects[0] : undefined;
+        project = open
+          ? {
+              name: open.name,
+              path: open.path,
+              unsaved: true,
+              objects: open.objects,
+              modified: open.modified,
+              note: "PrusaSlicer 3.0's backup of the unsaved project open in its window; project_info and slice read it. A project without unsaved changes has no backup.",
+            }
+          : null;
+      } else if (window.title) {
         const title = parseWindowTitle(window.title);
         const matches = title.name ? matchRecentProjects(title.name, state.recentProjects) : [];
         project = { name: title.name, path: matches[0] ?? null, unsaved: title.modified };
@@ -41,6 +55,8 @@ export function registerStatus(server: McpServer, { slicer, account }: ToolDeps)
           datadir: info.datadir,
         },
         selected_presets: state.presets,
+        selected_presets_from: state.presetsFrom,
+        open_projects: state.openProjects && state.openProjects.length > 1 ? state.openProjects.slice(0, 5).map(({ name, path, modified }) => ({ name, path, modified })) : undefined,
         physical_printers: physical.map((preset) => preset.name),
         recent_projects: state.recentProjects.slice(0, 8),
         gui: {

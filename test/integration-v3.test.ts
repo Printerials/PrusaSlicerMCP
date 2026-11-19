@@ -248,6 +248,20 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
       const rewritten = await readFile(again.data.file, "utf8");
       assert.match(rewritten, /^      temperature: 219$/m);
       assert.equal(/^id: (\S+)/m.exec(rewritten)![1], rootId, "the preset keeps its id");
+
+      // A project inside the data directory (as the GUI's backup of an unsaved project is): read, never written next to.
+      const backups = join(copy, "backup_projects");
+      await cp(await project("backup"), join(backups, "inst_id_backup.3mf"));
+      const info = await callCopy("project_info", { path: join(backups, "inst_id_backup.3mf") });
+      assert.equal(info.isError, false, info.text);
+      for (const [name, args] of [
+        ["slice", { inputs: [join(backups, "inst_id_backup.3mf")] }],
+        ["edit_project", { path: join(backups, "inst_id_backup.3mf"), settings: { fill_density: "20%" } }],
+      ] as const) {
+        const refused = await callCopy(name, args);
+        assert.equal(refused.isError, true, `${name} wrote next to the backup`);
+        assert.match(refused.text, /inside PrusaSlicer's data directory/);
+      }
     } finally {
       await other.close();
     }
@@ -262,9 +276,17 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
     assert.match(result.text, /to-open\.3mf/);
   });
 
-  test("no presets given: 3.0 keeps no selection, so it says so", async () => {
-    const result = await call("slice", { inputs: [join(dir, "cube.stl")] });
-    assert.equal(result.isError, true);
-    assert.match(result.text, /does not keep its selected presets/);
+  test("no presets given: the open project's presets, or a refusal that says why", async () => {
+    // 3.0 keeps no selection; an unsaved project open in its GUI (backup_projects) stands in for it.
+    const status = await call("slicer_status");
+    const result = await call("slice", { inputs: [join(dir, "cube.stl")], gcode_format: "ascii", output: join(dir, "no-presets.gcode") });
+    if (status.data.selected_presets_from) {
+      assert.equal(result.isError, false, result.text);
+      assert.deepEqual(result.data.presets.filled_in_from_selection, ["printer", "print", "filament"]);
+    } else {
+      assert.equal(result.isError, true);
+      assert.match(result.text, /keeps no selected presets/);
+    }
   });
+
 });

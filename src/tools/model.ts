@@ -139,6 +139,7 @@ export function registerModel(server: McpServer, { slicer }: ToolDeps): void {
       const target = output ? await outputTarget(output, dirname(files[0]!), "") : null;
       if (target && !target.toLowerCase().endsWith(`.${format}`)) throw new Refusal(`The output name must end in .${format}.`);
       const destDir = target ? dirname(target) : dirname(files[0]!);
+      await slicer.assertOutsideDatadir(destDir);
 
       const written = await withStaging(destDir, async (staging) => {
         // 3.0 moves a lone model to the bed centre on export; 2.x leaves it where it is. Kept the

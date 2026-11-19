@@ -113,6 +113,7 @@ export async function editV3Project(slicer: SlicerContext, file: string, args: E
   const shadowed = shadowsInObjects(project, [...changes.keys()].map((key) => catalog.get(key)?.aliasOf ?? key));
 
   const target = args.output ? await outputTarget(args.output, dirname(file), "") : await freeName(dirname(file), `${stem(file)}-edited.3mf`);
+  await slicer.assertOutsideDatadir(dirname(target));
   if (!target.toLowerCase().endsWith(".3mf")) throw new Refusal("The output name must end in .3mf.");
   if (target === file) throw new Refusal("Write the edited project to another file; the original stays as it is.");
 

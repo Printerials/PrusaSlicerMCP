@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { copyFile, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve as resolvePath } from "node:path";
+import { join, resolve as resolvePath, sep } from "node:path";
 import { parseHelp, type HelpInfo, type SettingInfo } from "./formats/help.ts";
 import { parseIniConfig, splitList, unescapeValue, type FlatConfig } from "./formats/ini.ts";
 import type { AppState, Backend, ProfilesListing } from "./slicer/backend.ts";
@@ -12,6 +12,8 @@ import { SerialQueue } from "./slicer/queue.ts";
 import { describeFailure, runSlicer, type RunOptions, type RunResult } from "./slicer/run.ts";
 import { v2Backend } from "./slicer/v2.ts";
 import { v3Backend } from "./slicer/v3.ts";
+import { readV3OpenProjects, readV3PhysicalPrinters, readV3UserPresets } from "./slicer/v3-userdata.ts";
+import { isGuiRunning } from "./gui/index.ts";
 import { Refusal } from "./util/errors.ts";
 import { expandHome } from "./util/paths.ts";
 import { suggest } from "./util/suggest.ts";
@@ -179,8 +181,12 @@ export class SlicerContext {
 
   /** User presets of one kind ("printer", "print", "filament"), from the datadir. */
   async userPresets(kind: "printer" | "print" | "filament" | "physical_printer"): Promise<UserPreset[]> {
-    const { datadir } = await this.info();
+    const { datadir, backend } = await this.info();
     if (!datadir) return [];
+    if (backend.major >= 3) {
+      if (kind === "physical_printer") return (await readV3PhysicalPrinters(datadir)).map((name) => ({ name, inherits: null }));
+      return (await readV3UserPresets(datadir, kind)).map(({ name, inherits }) => ({ name, inherits }));
+    }
     const dir = join(datadir, kind);
     if (!existsSync(dir)) return [];
     const presets: UserPreset[] = [];
@@ -215,11 +221,30 @@ export class SlicerContext {
   async appState(): Promise<AppState> {
     const info = await this.info();
     if (!info.datadir) return structuredClone(EMPTY_APP_STATE);
+    let state: AppState;
     try {
-      return await info.backend.readAppState(info.datadir);
+      state = await info.backend.readAppState(info.datadir);
     } catch {
-      return structuredClone(EMPTY_APP_STATE);
+      state = structuredClone(EMPTY_APP_STATE);
     }
+    if (!info.backend.keepsGuiSelection) {
+      // 3.0 keeps no selected presets, and its window title names no project. What it does keep
+      // is a backup of each unsaved project; while the GUI runs, the newest one is what is open,
+      // and its presets stand in for the selection 2.x keeps.
+      state.openProjects = await readV3OpenProjects(info.datadir).catch(() => []);
+      const open = state.openProjects[0];
+      const usable = (name: string | null | undefined) => Boolean(name) && !name!.startsWith("(From 3mf)");
+      if (!state.presets.printer && open && usable(open.presets.printer) && (await isGuiRunning())) {
+        state.presets = {
+          printer: open.presets.printer,
+          print: usable(open.presets.print) ? open.presets.print : null,
+          filament: usable(open.presets.filament[0]) ? open.presets.filament[0]! : null,
+          physicalPrinter: null,
+        };
+        state.presetsFrom = `the project open in PrusaSlicer (${open.name}), from its backup`;
+      }
+    }
+    return state;
   }
 
   /**
@@ -237,7 +262,7 @@ export class SlicerContext {
       throw new Refusal(
         info.backend.keepsGuiSelection
           ? "No printer given and none is selected in PrusaSlicer. list_printers shows the installed ones."
-          : "No printer given. PrusaSlicer 3.0 does not keep its selected presets where this server can read them, so give printer, print and filament. list_printers and list_profiles show the names.",
+          : "No printer given, and no unsaved project is open in PrusaSlicer 3.0 to take presets from (3.0 keeps no selected presets). Give printer, print and filament; list_printers and list_profiles show the names.",
       );
     }
     if (!partial.printer) filledIn.push("printer");
@@ -311,6 +336,23 @@ export class SlicerContext {
     if (!existsSync(path)) throw new Refusal(`${path} does not exist. Start PrusaSlicer once and finish the Configuration Wizard.`);
     const text = await readFile(path, "utf8");
     return { path, text, installed: parseInstalled(text) };
+  }
+
+  /**
+   * Output never goes into PrusaSlicer's data directory. It holds the presets and, for 3.0, the
+   * GUI's backups of unsaved projects (backup_projects): a 3MF written there is offered for
+   * recovery at the next start, and slicing the open project's backup would otherwise put its
+   * G-code right next to it.
+   */
+  async assertOutsideDatadir(dir: string): Promise<void> {
+    const info = await this.info();
+    const target = resolvePath(dir);
+    const roots = [info.datadir, info.backend.defaultDatadir()].filter((root): root is string => Boolean(root)).map((root) => resolvePath(root));
+    if (roots.some((root) => target === root || target.startsWith(`${root}${sep}`))) {
+      throw new Refusal(
+        `${dir} is inside PrusaSlicer's data directory (its presets, and its backups of unsaved projects). Nothing is written there: give an output outside it.`,
+      );
+    }
   }
 
   /** True when the GUI would use this datadir: PrusaSlicer's default one. */

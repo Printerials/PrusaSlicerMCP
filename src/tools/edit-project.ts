@@ -134,6 +134,7 @@ export function registerEditProject(server: McpServer, { slicer }: ToolDeps): vo
       const nextConfig = setConfigValues(configText, changes);
 
       const target = args.output ? await outputTarget(args.output, dirname(file), "") : await freeName(dirname(file), `${stem(file)}-edited.3mf`);
+      await slicer.assertOutsideDatadir(dirname(target));
       if (!target.toLowerCase().endsWith(".3mf")) throw new Refusal("The output name must end in .3mf.");
       if (target === file) throw new Refusal("Write the edited project to another file; the original stays as it is.");
 
