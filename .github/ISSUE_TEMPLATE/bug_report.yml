@@ -1,0 +1,55 @@
+name: Bug report
+description: A tool did something wrong, or PrusaSlicer behaved differently than the server expects.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What the tool returned or did. Paste error messages as they were.
+    validations:
+      required: true
+  - type: textarea
+    id: call
+    attributes:
+      label: Tool and arguments
+      description: The tool that was called and its arguments, as the MCP host shows them. Leave out tokens and SPOOLMAN_URL.
+      render: json
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+  - type: input
+    id: prusaslicer
+    attributes:
+      label: PrusaSlicer version
+      description: The exact version, alphas included. 2.9 and 3.0 behave differently.
+      placeholder: 2.9.7 or 3.0.0-alpha14
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: MCP host
+      placeholder: Claude Code, Claude Desktop, ...
+  - type: input
+    id: commit
+    attributes:
+      label: prusaslicer-mcp commit
+      description: "`git rev-parse --short HEAD` in your checkout."
+  - type: textarea
+    id: output
+    attributes:
+      label: Output or logs
+      description: PrusaSlicer's output or the server's log, if you have it. Leave out tokens and SPOOLMAN_URL.
+      render: text

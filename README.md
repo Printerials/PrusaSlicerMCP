@@ -7,7 +7,7 @@ PrusaSlicer is the source of truth. Profiles, compatibility, inheritance, slicin
 ## Requirements
 
 - Node.js 24 or newer
-- PrusaSlicer 2.9. It is found in `/Applications`, `/Applications/Original Prusa Drivers`, `~/Applications`, `Program Files\Prusa3D\PrusaSlicer`, or on `PATH`. 3.0 (alpha) works for slicing and profile queries but is experimental; see below.
+- PrusaSlicer 2.9. It is found in `/Applications`, `/Applications/Original Prusa Drivers`, `~/Applications`, `Program Files\Prusa3D\PrusaSlicer`, or on `PATH`. 3.0.0-alpha14 works for all tools but four (`find_profiles`, `install_profiles`, `create_filament_preset`, `edit_project`), which refuse it; point `PRUSASLICER_PATH` at it, see [PrusaSlicer 3.0](#prusaslicer-30).
 - For the GUI tools, macOS or Windows.
   - On macOS, the app that runs the server needs **Screen Recording** permission, for window titles and screenshots.
   - It also needs **Files and Folders** permission to read from `~/Downloads`, `~/Documents` or `~/Desktop`.
@@ -168,6 +168,10 @@ The integration tests write only to a temporary directory and do not open anythi
 - **Both, compared:** with `PRUSASLICER_PATH_3` set to the 3.0 app, `test/integration-benchy.test.ts` slices a 3DBenchy with both versions and compares filament, time and lifts.
 - **3DBenchy** ([CreativeTools/3DBenchy](https://github.com/CreativeTools/3DBenchy), public domain under CC0 since February 2025) is not in the repository: 11 MB. The test downloads `Single-part/3DBenchy.stl` once, checks its SHA-256 and caches it in `~/Library/Caches/PrusaSlicerMCP/test-models` (`PRUSASLICER_MCP_TEST_CACHE` to put it elsewhere). Offline and without the cache, those tests skip.
 - **Keep the Mac awake** for the integration tests (`caffeinate -i npm run test:integration`). In sleep the clock runs on, and every PrusaSlicer call that was running hits its 60 s limit on waking.
+
+## License
+
+AGPL-3.0-only, see [LICENSE](LICENSE). Copyright (C) 2026 Enkodo.
 
 ## Credits
 
