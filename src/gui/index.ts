@@ -86,6 +86,35 @@ export function openInGui(binary: LocatedBinary, paths: string[]): Promise<void>
   });
 }
 
+/**
+ * PrusaSlicer 3.0 (checked against 3.0.0-alpha14, 2026-11-19): `open -a` and Finder's "Open With"
+ * give an empty project, because 3.0 handles no open-documents event. What reaches the running GUI
+ * is --single-instance, which imports the files into the current project as geometry: a 3MF's
+ * settings do not come along. The call exits 1 with "Failed to create a lockfile" and still
+ * delivers. Started cold, PrusaSlicer ignores file arguments (source DesktopApp.cpp), so the GUI is
+ * started first and the files sent once it runs.
+ */
+export async function importIntoV3Gui(binary: LocatedBinary, paths: string[]): Promise<{ started: boolean }> {
+  let started = false;
+  if (!(await isGuiRunning())) {
+    if (process.platform === "darwin" && binary.appBundle) {
+      await new Promise<void>((resolve, reject) =>
+        execFile("open", ["-a", binary.appBundle!], { timeout: 15000 }, (error) => (error ? reject(error) : resolve())),
+      );
+    } else {
+      spawn(binary.path, [], { detached: true, stdio: "ignore" }).unref();
+    }
+    started = true;
+    for (let waited = 0; waited < 30 && !(await isGuiRunning()); waited++) await new Promise((resolve) => setTimeout(resolve, 1000));
+    // The window needs a moment after the process appears before it takes messages.
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+  await new Promise<void>((resolve) => {
+    execFile(binary.path, ["--single-instance", ...paths], { timeout: 30000 }, () => resolve());
+  });
+  return { started };
+}
+
 // ─── Window title → project ───────────────────────────────────
 
 const MODEL_EXTENSIONS = [".3mf", ".stl", ".obj", ".step", ".stp", ".amf"];

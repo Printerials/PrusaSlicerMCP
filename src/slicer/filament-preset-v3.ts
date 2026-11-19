@@ -135,3 +135,18 @@ export async function writeChecked(file: string, content: string, check: () => P
     throw error;
   }
 }
+
+/**
+ * A value PrusaSlicer resolved against the 2.x text the plan wrote. Text is compared whole first:
+ * notes and names may hold "," or ";", which would otherwise split them like a per-extruder list
+ * (a note "…; safe to delete" was refused that way). Then the first entry of a list, numbers by value.
+ */
+export function sameSetting(resolved: string, written: string): boolean {
+  if (unescapeValue(resolved.trim()) === unescapeValue(written.trim())) return true;
+  const a = unescapeValue(splitList(resolved)[0] ?? resolved).trim();
+  const b = unescapeValue(splitList(written)[0] ?? written).trim();
+  if (a === b) return true;
+  const x = Number(a);
+  const y = Number(b);
+  return a !== "" && b !== "" && Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) < 1e-9;
+}

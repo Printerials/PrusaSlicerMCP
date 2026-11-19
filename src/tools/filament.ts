@@ -7,7 +7,7 @@ import type { Presets } from "../context.ts";
 import { splitList, unescapeValue } from "../formats/ini.ts";
 import { planFilamentPreset, renderPreset, validPresetName, type StatedFilament } from "../slicer/filament-preset.ts";
 import { bundleFilamentValue } from "../slicer/installed.ts";
-import { existingIds, renderV3FilamentPreset, v3PresetTarget, v3Values, writeChecked } from "../slicer/filament-preset-v3.ts";
+import { existingIds, renderV3FilamentPreset, sameSetting, v3PresetTarget, v3Values, writeChecked } from "../slicer/filament-preset-v3.ts";
 import type { PrinterialsAccount } from "../printerials/account.ts";
 import { PrinterialsClient, statedFromPrinterials, variantFromExternalId } from "../printerials/client.ts";
 import { prusaTypeOf, spoolLabel, SpoolmanClient, SpoolmanError, spoolPricePerKg, type SpoolmanSpool } from "../spoolman/client.ts";
@@ -446,14 +446,4 @@ export function registerFilament(server: McpServer, { slicer, account }: ToolDep
       });
     },
   );
-}
-
-/** A value PrusaSlicer resolved against the 2.x text the plan wrote: numbers by value, text unquoted. */
-function sameSetting(resolved: string, written: string): boolean {
-  const a = unescapeValue(splitList(resolved)[0] ?? resolved).trim();
-  const b = unescapeValue(splitList(written)[0] ?? written).trim();
-  if (a === b) return true;
-  const x = Number(a);
-  const y = Number(b);
-  return a !== "" && b !== "" && Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) < 1e-9;
 }

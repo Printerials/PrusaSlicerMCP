@@ -9,7 +9,7 @@ import { assertPresetsUsed } from "../../src/context.ts";
 import { checkPatched, patchSavedConfig } from "../../src/slicer/v3-config.ts";
 import { filamentShadows } from "../../src/tools/args.ts";
 import { stabilityOf } from "../../src/tools/slice.ts";
-import { existingIds, renderV3FilamentPreset, v3PresetTarget, v3Values, writeChecked } from "../../src/slicer/filament-preset-v3.ts";
+import { existingIds, renderV3FilamentPreset, sameSetting, v3PresetTarget, v3Values, writeChecked } from "../../src/slicer/filament-preset-v3.ts";
 import { v3Backend } from "../../src/slicer/v3.ts";
 import { stlBounds } from "../../src/formats/stl.ts";
 import { readProject } from "../../src/formats/threemf.ts";
@@ -269,4 +269,15 @@ test("3.0 filament preset: a failed check puts back what was there", async () =>
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("3.0 filament preset: resolved values against what was written", () => {
+  // A note with ";" was refused once: it was split like a per-extruder list.
+  assert.equal(sameSetting("test preset; safe to delete", '"test preset; safe to delete"'), true);
+  assert.equal(sameSetting("Acme, Inc.", "Acme, Inc."), true);
+  assert.equal(sameSetting("215", "215"), true);
+  assert.equal(sameSetting("215,215", "215"), true);
+  assert.equal(sameSetting("1.240", "1.24"), true);
+  assert.equal(sameSetting("220", "215"), false);
+  assert.equal(sameSetting("other note", '"test note"'), false);
 });

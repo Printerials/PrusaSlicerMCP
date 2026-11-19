@@ -1,14 +1,20 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
-import { captureWindow, openInGui, windowState } from "../gui/index.ts";
+import { captureWindow, importIntoV3Gui, openInGui, windowState } from "../gui/index.ts";
+import { readProject } from "../formats/threemf.ts";
 import { Refusal } from "../util/errors.ts";
 import { requireFile } from "../util/paths.ts";
 import { json, READ_ONLY, tool, type ToolDeps } from "./common.ts";
 import { MODEL_EXTENSIONS } from "./slice.ts";
+
+/** Why a 3.0 project cannot be opened from here, checked against 3.0.0-alpha14 on 2026-11-19. */
+export const V3_PROJECT_REFUSAL =
+  "PrusaSlicer 3.0 cannot be told to open a project from outside: macOS's open (and Finder's Open With) gives an empty project, " +
+  "and its single-instance channel imports only the geometry, without the project's settings. Open the file in PrusaSlicer with Open project.";
 
 export function registerGui(server: McpServer, { slicer }: ToolDeps): void {
   tool(
@@ -18,13 +24,31 @@ export function registerGui(server: McpServer, { slicer }: ToolDeps): void {
       title: "Open in PrusaSlicer",
       description:
         "Open model, project or G-code files in the running PrusaSlicer, or start it with them. PrusaSlicer may ask the user whether to load a 3MF " +
-        "as a project or import only its geometry; that dialog stays for the user to answer.",
+        "as a project or import only its geometry; that dialog stays for the user to answer. PrusaSlicer 3.0 takes only models from outside, " +
+        "imported into its open project; a 3.0 or 2.x project has to be opened in PrusaSlicer itself, and the answer says so.",
       inputSchema: z.object({ paths: z.array(z.string()).min(1).max(20).describe("Absolute paths.") }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ paths }) => {
       const files = await Promise.all(paths.map((path) => requireFile(path, [...MODEL_EXTENSIONS, ".gcode", ".bgcode"])));
       const info = await slicer.info();
+      if (info.backend.major >= 3) {
+        const projects: string[] = [];
+        for (const file of files) {
+          if (/\.b?gcode$/i.test(file)) throw new Refusal("PrusaSlicer 3.0 cannot be sent G-code to view from outside. gcode_info reads it here.");
+          if (extname(file).toLowerCase() === ".3mf") {
+            const kind = (await readProject(file).catch(() => null))?.kind;
+            if (kind === "prusaslicer-3" || kind === "prusaslicer-2") projects.push(file);
+          }
+        }
+        if (projects.length) throw new Refusal(V3_PROJECT_REFUSAL, { open_in_prusaslicer_yourself: projects });
+        const { started } = await importIntoV3Gui(info.binary, files);
+        return json({
+          imported: files,
+          started_prusaslicer: started || undefined,
+          note: "Imported into the project open in PrusaSlicer 3.0, as objects. Its window title does not change, so check with screenshot_prusaslicer.",
+        });
+      }
       const before = await windowState();
       await openInGui(info.binary, files);
       // Give PrusaSlicer a moment to load, so the title reflects the result.

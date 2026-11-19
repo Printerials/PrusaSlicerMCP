@@ -16,6 +16,7 @@ import { commitFile, outputTarget, requireFile, stem, withStaging } from "../uti
 import { suggest } from "../util/suggest.ts";
 import { filamentShadows } from "./args.ts";
 import { editV3Project } from "./edit-project-v3.ts";
+import { V3_PROJECT_REFUSAL } from "./gui.ts";
 import { json, tool, type ToolDeps } from "./common.ts";
 import { freeName } from "./slice.ts";
 
@@ -63,7 +64,7 @@ export function registerEditProject(server: McpServer, { slicer }: ToolDeps): vo
         }
         if (project.kind !== "prusaslicer-3") throw new Refusal("This 3MF holds no PrusaSlicer settings. Slice it with presets and overrides instead.");
         const edited = await editV3Project(slicer, file, args);
-        return json({ ...edited, opened: args.open ? await openResult(slicer, edited.output as string) : undefined });
+        return json({ ...edited, opened: args.open ? { opened: false, note: V3_PROJECT_REFUSAL, path: edited.output } : undefined });
       }
       if (project.kind !== "prusaslicer-2" || project.config.size === 0) {
         throw new Refusal(
@@ -190,10 +191,7 @@ async function openResult(slicer: ToolDeps["slicer"], path: string): Promise<Rec
   return {
     was_running: wasRunning,
     window_title: state.title,
-    note:
-      info.backend.major >= 3
-        ? "PrusaSlicer 3.0's window title does not show the project, and opening files through the system may not load them (not verified for 3.0): check the window, or open the file there."
-        : state.note,
+    note: state.note,
   };
 }
 

@@ -253,6 +253,15 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
     }
   });
 
+  test("open_in_prusaslicer refuses a 3.0 project instead of reporting it opened", async () => {
+    // Checked with the 3.0.0-alpha14 GUI: open -a gives an empty project, --single-instance drops the settings.
+    const path = await project("to-open");
+    const result = await call("open_in_prusaslicer", { paths: [path] });
+    assert.equal(result.isError, true);
+    assert.match(result.text, /cannot be told to open a project from outside/);
+    assert.match(result.text, /to-open\.3mf/);
+  });
+
   test("no presets given: 3.0 keeps no selection, so it says so", async () => {
     const result = await call("slice", { inputs: [join(dir, "cube.stl")] });
     assert.equal(result.isError, true);

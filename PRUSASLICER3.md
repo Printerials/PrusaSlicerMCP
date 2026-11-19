@@ -89,7 +89,7 @@ Paths in source references are relative to `src/` of that checkout. Where the se
   - An unknown variable in `condition` makes almost every printer of that vendor disappear (31 models to 2).
   - A parent id that does not exist crashes every CLI call (exit 134).
   - Validate after writing, and roll back. (measured on a copy)
-- **When a new file is seen:** the CLI sees it on the next call. The GUI only at start: there is no file watcher. (measured for the CLI; source `DesktopApp.cpp:546-550`)
+- **When a new file is seen:** the CLI sees it on the next call. The GUI only at start: there is no file watcher. A preset written by the server showed in the GUI's filament list after a restart. (measured; source `DesktopApp.cpp:546-550`)
 - **No "installed" profiles.** Every vendor profile is available. `printer_favorite_presets` (printer model ids) and `material_favorite_presets` (evaluated material ids) only filter the GUI's lists. (source `BundleLoader.cpp:90-108`, `MaterialSelectionDialog.cpp:30-36`)
 - **`PrusaSlicer.json` is rewritten by the GUI when its window closes.** Edit it only while PrusaSlicer is closed. If one of `printer_favorite_presets`, `material_favorite_presets` or `recent_projects` is missing, the whole file is reset to defaults. (source `MainFrame.cpp:968-981`, `AppSettingsAdvanced.cpp:83-91`)
 - **Vendor bundles** are updated with `--preset-update-sources`, `--preset-update-select-source UUID`, `--preset-update-list`, `--preset-update` and `--preset-update-add-local ZIP`, which write JSON to stdout. (source `ReadCLI.cpp:485-553`; `--preset-update-sources` measured)
@@ -100,7 +100,11 @@ Paths in source references are relative to `src/` of that checkout. Where the se
 - **No control API.** (source)
   - The single-instance IPC (a macOS distributed notification, `OtherPrusaSlicerMulticastMessage`) can only open files or `prusaslicer://` URLs, and it imports them as geometry (source `AppInstanceMessageHandlerMac.mm:24, 64-76`, `ProjectInteractor.hpp:574-577`).
   - `prusaslicer://open?file=<https URL>` only takes Prusa, Printables, Thingiverse and Cults3D links. (source `FileDownloaderInteractor.cpp:41-90`)
-- **`open -a <app> <file>` probably does not open the file:** the app handles URL events, not open-document events, and ignores file arguments at start. (source `DesktopApp.cpp:706-711, 873-883`; not tried, because it would change the open project)
+- **Opening a file from outside does not open it as a project.** (measured with the GUI, 2026-11-19)
+  - `open -a <app> <file>`, and Finder's "Open With", give an empty project: 3.0 handles no open-documents event (source `DesktopApp.cpp:706-711, 873-883`).
+  - `PrusaSlicer --single-instance <file>` reaches the running GUI. It prints "Failed to create a lockfile" and exits 1, yet the file is imported into the current project, placed on the bed, as geometry only: a 3MF's settings do not come along.
+  - Only the GUI's own Open project loads a 3MF with its settings. A project edited by the server's `edit_project` opened that way with its new values.
+  - So `open_in_prusaslicer` imports models through `--single-instance`, and refuses projects with that reason instead of reporting them opened.
 - **The window title is always the build id**, so it shows no project name and no unsaved-changes marker. (source `MainFrame.cpp:90`)
 - **Unsaved projects are backed up as full 3MFs** in `backup_projects/<instance>_<project>_<name>.3mf` on every change, and removed when saved. That is a readable copy of what the user is editing. (source `BackupStore.cpp:64-133`; a backup file was seen there)
 - **Lua plugins** run only in the GUI, from a menu, in a sandbox with base, table, math and string; they cannot reach other processes. (source `LuaEngine.cpp:21-22`) See also the Onthoud note `prusaslicer-lua-plugins`.
@@ -116,7 +120,7 @@ Paths in source references are relative to `src/` of that checkout. Where the se
 
 ## Not known yet
 
-- Whether `open -a` and the IPC open a 3.0 project in the running GUI (to try with a project that may be replaced).
-- Whether the GUI opens a project edited by `edit_project` with everything intact (the CLI does), and whether `--load full.json --dont-arrange --export-3mf -o out.3mf in.3mf` keeps painting, ranges and colour changes.
-- Whether a preset written by `create_filament_preset` shows correctly in the GUI after a restart (the CLI uses it).
+- Whether a 3.0 project edited by `edit_project` shows its presets as "(From 3mf) <name>" in the GUI (its values were checked, the preset names were not).
+- Whether `--load full.json --dont-arrange --export-3mf -o out.3mf in.3mf` keeps painting, ranges and colour changes.
 - Whether the warning codes other than 7 have the numbers of the source in this build.
+- Whether `--single-instance` imports into a GUI the server had to start first (the server waits for it; not tried).
