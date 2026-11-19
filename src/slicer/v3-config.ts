@@ -122,6 +122,11 @@ export function checkPatched(loadedConfig: string, targets: ReadonlyMap<string, 
   return check;
 }
 
+/** A value as the schema types it (Int and Float as numbers, Bool, percentages), for a key without a current value. */
+export function schemaValue(key: string, text: string, info: SettingInfo | undefined): Json {
+  return convertScalar(key, text.trim(), null, info);
+}
+
 function convert(key: string, text: string, current: Json, info: SettingInfo | undefined): Json {
   if (Array.isArray(current)) return convertList(key, text, current, info);
   return convertScalar(key, text.trim(), current, info);

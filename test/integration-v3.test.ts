@@ -6,13 +6,16 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { copyFile, cp, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { locateSlicer } from "../src/slicer/locate.ts";
+import { ZipReader } from "../src/formats/zip.ts";
+import { writeZip } from "./helpers/zip.ts";
+import { lifts } from "./helpers/models.ts";
 
 const root = join(import.meta.dirname, "..");
 const located = locateSlicer();
@@ -128,13 +131,126 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
     assert.equal(await stat(join(dir, "never.gcode")).then(() => true, () => false), false);
   });
 
-  test("binary G-code is refused where the CLI cannot write it, and no wrongly named file is left", async (t) => {
+  test("binary G-code: a .bgcode output is real binary, and auto follows the printer's binary_gcode", async (t) => {
     if (!filament) return t.skip("no profiles");
+    // 3.0.0-alpha14 picks the format by the extension of output_filename_format, not by binary_gcode.
+    const magic = async (path: string) => (await readFile(path)).subarray(0, 4).toString("latin1");
     const output = join(dir, "binary.bgcode");
-    const result = await call("slice", { inputs: [join(dir, "cube.stl")], printer, print, filament, output });
-    if (!result.isError) return t.skip("this 3.x writes binary G-code");
-    assert.match(result.text, /Binary G-code was asked for/);
-    assert.equal(await stat(output).then(() => true, () => false), false);
+    const named = await call("slice", { inputs: [join(dir, "cube.stl")], printer, print, filament, output });
+    assert.equal(named.isError, false, named.text);
+    assert.equal(await magic(output), "GCDE");
+    assert.equal(named.data.result.format, "binary");
+    const auto = await call("slice", { inputs: [join(dir, "cube.stl")], printer, print, filament, output: dir });
+    assert.equal(auto.isError, false, auto.text);
+    const config = await call("get_config", { printer, print, filament, keys: ["binary_gcode"] });
+    const expected = config.data.values.binary_gcode === "1" ? ".bgcode" : ".gcode";
+    assert.ok(auto.data.output.endsWith(expected), `${auto.data.output}, binary_gcode ${config.data.values.binary_gcode}`);
+  });
+
+  test("stability_check: PrusaSlicer's own check, a cube passes", async (t) => {
+    if (!filament) return t.skip("no profiles");
+    const result = await call("slice", { inputs: [join(dir, "cube.stl")], printer, print, filament, gcode_format: "ascii", output: join(dir, "stable.gcode"), stability_check: true });
+    assert.equal(result.isError, false, result.text);
+    assert.equal(result.data.stability.issues_found, false);
+    assert.equal(result.data.messages?.some((line: string) => line.startsWith("[20")), undefined, "trace lines leaked into messages");
+  });
+
+  /** A 3.0 project: the cube's geometry as PrusaSlicer exports it, with the project config alpha14 wrote for it. */
+  const project = async (name: string, change?: (json: any) => void) => {
+    const geometry = join(dir, `${name}-geometry.3mf`);
+    const exported = await call("export_model", { inputs: [join(dir, "cube.stl")], format: "3mf", output: geometry });
+    assert.equal(exported.isError, false, exported.text);
+    const zip = await ZipReader.open(geometry);
+    const files: Record<string, Buffer | string> = {};
+    for (const entry of zip.entries.keys()) files[entry] = (await zip.read(entry))!;
+    await zip.close();
+    const json = JSON.parse(await readFile(join(root, "test", "fixtures", "3.0.0-alpha14", "project.json"), "utf8"));
+    change?.(json);
+    files["Metadata/PrusaSlicer3_project.json"] = JSON.stringify(json);
+    const path = join(dir, `${name}.3mf`);
+    await writeZip(path, files);
+    return path;
+  };
+
+  test("edit_project on a 3.0 project: values in every layer, read back, and they slice", async () => {
+    const path = await project("bracket");
+    const edited = await call("edit_project", { path, settings: { fill_density: "20%", travel_ramping_lift: false, retract_lift: 0.4 } });
+    assert.equal(edited.isError, false, edited.text);
+    assert.deepEqual(Object.keys(edited.data.changed).sort(), ["fill_density", "retract_lift", "travel_ramping_lift"]);
+    assert.match(edited.data.also_set[0], /travel_ramping_lift: the filament profile overrides it/);
+    assert.equal(edited.data.presets.after.print, "0.15mm BALANCED @COREONE 0.4HF");
+    const sliced = await call("slice", { inputs: [edited.data.output], gcode_format: "ascii", output: join(dir, "edited.gcode") });
+    assert.equal(sliced.isError, false, sliced.text);
+    const heights = lifts(await readFile(join(dir, "edited.gcode"), "utf8"));
+    const total = [...heights.values()].reduce((sum, count) => sum + count, 0);
+    assert.ok((heights.get(0.4) ?? 0) / total > 0.95, `lifts ${JSON.stringify([...heights])}`);
+  });
+
+  test("edit_project on a 3.0 project: a preset switch, a bad value, a part that keeps its own", async () => {
+    const path = await project("switch");
+    const switched = await call("edit_project", { path, print: "0.20mm SPEED @COREONE 0.4HF", output: join(dir, "switched.3mf") });
+    assert.equal(switched.isError, false, switched.text);
+    assert.equal(switched.data.presets.after.print, "0.20mm SPEED @COREONE 0.4HF");
+    const bad = await call("edit_project", { path, settings: { fill_pattern: "lightnin" }, output: join(dir, "bad.3mf") });
+    assert.equal(bad.isError, true);
+    assert.match(bad.text, /one of rectilinear/);
+    assert.equal(await stat(join(dir, "bad.3mf")).then(() => true, () => false), false);
+    const own = await project("own", (json) => (json.objects[0].object_settings.fill_density = { value: 40, is_percent: true }));
+    const kept = await call("edit_project", { path: own, settings: { fill_density: "20%" } });
+    assert.equal(kept.isError, false, kept.text);
+    assert.match(kept.data.kept_by_objects[0], /object 1 sets fill_density/);
+  });
+
+  test("create_filament_preset on 3.0: a YAML preset on its parent, sliced with, overwritten in place", async (t) => {
+    if (!filament) return t.skip("no profiles");
+    // On a copy of the data directory: the real one is only read.
+    const status = await call("slicer_status");
+    const datadir: string | null = status.data.slicer.datadir;
+    if (!datadir) return t.skip("no 3.0 data directory");
+    const copy = join(dir, "datadir");
+    await cp(datadir, copy, { recursive: true, filter: (source) => !source.endsWith(".lock") });
+    const other = new Client({ name: "integration-test-3-presets", version: "0" });
+    await other.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: [join(root, "src", "index.ts")],
+        stderr: "ignore",
+        cwd: root,
+        env: { ...(process.env as Record<string, string>), PRUSASLICER_DATADIR: copy },
+      }),
+    );
+    const callCopy = async (name: string, args: Record<string, unknown>) => {
+      const result = await other.callTool({ name, arguments: args });
+      const text = (result.content as Array<{ type: string; text?: string }>).map((part) => part.text ?? "").join("\n");
+      return { isError: Boolean(result.isError), text, data: result.isError ? null : JSON.parse(text) };
+    };
+    try {
+      const request = { printer, type: "PLA", name: "Integration PLA", values: { vendor: "Acme", nozzle_temp: 214, density: 1.23 } };
+      const dry = await callCopy("create_filament_preset", { ...request, dry_run: true });
+      assert.equal(dry.isError, false, dry.text);
+      assert.match(dry.data.parent, /^Generic PLA ?@/);
+      assert.equal(await stat(dry.data.file).then(() => true, () => false), false, "a dry run writes nothing");
+      const made = await callCopy("create_filament_preset", request);
+      assert.equal(made.isError, false, made.text);
+      assert.ok(made.data.file.startsWith(copy), "written into the copy");
+      const yaml = await readFile(made.data.file, "utf8");
+      assert.match(yaml, /^    unconditional_inherits: \[/m);
+      const rootId = /^id: (\S+)/m.exec(yaml)![1];
+
+      const output = join(dir, "integration-pla.gcode");
+      const sliced = await callCopy("slice", { inputs: [join(dir, "cube.stl")], printer, print, filament: "Integration PLA", gcode_format: "ascii", output });
+      assert.equal(sliced.isError, false, sliced.text);
+      assert.match(await readFile(output, "utf8"), /^; temperature = 214$/m);
+
+      assert.equal((await callCopy("create_filament_preset", request)).isError, true, "no overwrite without overwrite: true");
+      const again = await callCopy("create_filament_preset", { ...request, values: { ...request.values, nozzle_temp: 219 }, overwrite: true });
+      assert.equal(again.isError, false, again.text);
+      const rewritten = await readFile(again.data.file, "utf8");
+      assert.match(rewritten, /^      temperature: 219$/m);
+      assert.equal(/^id: (\S+)/m.exec(rewritten)![1], rootId, "the preset keeps its id");
+    } finally {
+      await other.close();
+    }
   });
 
   test("no presets given: 3.0 keeps no selection, so it says so", async () => {

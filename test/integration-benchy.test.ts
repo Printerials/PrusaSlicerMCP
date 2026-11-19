@@ -162,6 +162,19 @@ for (const target of targets) {
       assert.ok(share04(await readFile(named, "utf8")) > 0.95, "filament_* overrides did not reach the G-code");
     });
 
+    test("stability_check: 3.x reports PrusaSlicer's own finding, 2.x refuses", async (t) => {
+      if (!presets) return t.skip("no presets");
+      const result = await call("slice", { inputs: [input], ...presets, gcode_format: "ascii", output: join(dir, "stability.gcode"), stability_check: true });
+      if (target.version.startsWith("2.")) {
+        assert.equal(result.isError, true);
+        assert.match(result.text, /needs PrusaSlicer 3\.x/);
+        return;
+      }
+      assert.equal(result.isError, false, result.text);
+      // 3.0.0-alpha14 flags a 3DBenchy (code 7, StabilityIssues); not compared with what its GUI says.
+      assert.equal(result.data.stability.issues_found, true);
+    });
+
     test("postprocess_gcode: a pause at layer 50", async (t) => {
       if (!sliced.has(target.version)) return t.skip("not sliced");
       const result = await call("postprocess_gcode", { path: join(dir, "benchy.gcode"), inserts: [{ layer: 50, action: "pause" }], output: join(dir, "benchy-pause.gcode") });

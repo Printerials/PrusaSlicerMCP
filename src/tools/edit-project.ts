@@ -15,6 +15,7 @@ import { Refusal } from "../util/errors.ts";
 import { commitFile, outputTarget, requireFile, stem, withStaging } from "../util/paths.ts";
 import { suggest } from "../util/suggest.ts";
 import { filamentShadows } from "./args.ts";
+import { editV3Project } from "./edit-project-v3.ts";
 import { json, tool, type ToolDeps } from "./common.ts";
 import { freeName } from "./slice.ts";
 
@@ -33,7 +34,7 @@ export function registerEditProject(server: McpServer, { slicer }: ToolDeps): vo
       description:
         "Change the settings of a PrusaSlicer 3MF project instead of asking the user to click: switch its filament or print preset, and set settings " +
         "(fill_density, fill_pattern, infill_every_layers, ...). Writes a copy next to the project, has PrusaSlicer load it to check every value, and " +
-        "can open it in PrusaSlicer, where the changes show as modified settings. For the project open in the GUI, take its path from slicer_status. " +
+        "can open it in PrusaSlicer, where the changes show as modified settings (in PrusaSlicer 3.0 as a preset named '(From 3mf) <name>'). For the project open in the GUI, take its path from slicer_status. " +
         "The running GUI itself cannot be changed: PrusaSlicer has no API for that.",
       inputSchema: z.object({
         path: z.string().describe("Absolute path of a .3mf project saved by PrusaSlicer 2.x."),
@@ -52,13 +53,18 @@ export function registerEditProject(server: McpServer, { slicer }: ToolDeps): vo
     async (args) => {
       if (!args.filament && !args.print && !args.settings) throw new Refusal("Give a filament, a print preset or settings to change.");
       const file = await requireFile(args.path, [".3mf"]);
-      // The check below reads what PrusaSlicer saves as INI; 3.0 saves JSON and takes settings differently.
-      if ((await slicer.info()).backend.major >= 3) {
-        throw new Refusal(
-          "edit_project works with PrusaSlicer 2.x only, so far. This server runs PrusaSlicer 3.x; slice with presets and overrides instead, or run the server with 2.9 (PRUSASLICER_PATH).",
-        );
-      }
       const project = await readProject(file);
+      if ((await slicer.info()).backend.major >= 3) {
+        if (project.kind === "prusaslicer-2") {
+          throw new Refusal(
+            "This is a PrusaSlicer 2.x project and the server runs 3.x. PrusaSlicer 3.0 opens it with its presets and values; saved there it becomes a 3.0 project " +
+              "that edit_project can change. Or run the server with 2.9 (PRUSASLICER_PATH) to edit it as it is.",
+          );
+        }
+        if (project.kind !== "prusaslicer-3") throw new Refusal("This 3MF holds no PrusaSlicer settings. Slice it with presets and overrides instead.");
+        const edited = await editV3Project(slicer, file, args);
+        return json({ ...edited, opened: args.open ? await openResult(slicer, edited.output as string) : undefined });
+      }
       if (project.kind !== "prusaslicer-2" || project.config.size === 0) {
         throw new Refusal(
           project.kind === "prusaslicer-3"
@@ -155,15 +161,7 @@ export function registerEditProject(server: McpServer, { slicer }: ToolDeps): vo
         return loaded;
       });
 
-      let opened: Record<string, unknown> | undefined;
-      if (args.open) {
-        const info = await slicer.info();
-        const wasRunning = (await windowState()).running;
-        await openInGui(info.binary, [target]);
-        await sleep(wasRunning ? 1500 : 4000);
-        const state = await windowState();
-        opened = { was_running: wasRunning, window_title: state.title, note: state.note };
-      }
+      const opened = args.open ? await openResult(slicer, target) : undefined;
 
       const filamentNow = splitList(check.get("filament_settings_id") ?? "")[0] ?? null;
       return json({
@@ -180,6 +178,23 @@ export function registerEditProject(server: McpServer, { slicer }: ToolDeps): vo
       });
     },
   );
+}
+
+/** Opens the result in PrusaSlicer and says what the window shows afterwards. */
+async function openResult(slicer: ToolDeps["slicer"], path: string): Promise<Record<string, unknown>> {
+  const info = await slicer.info();
+  const wasRunning = (await windowState()).running;
+  await openInGui(info.binary, [path]);
+  await sleep(wasRunning ? 1500 : 4000);
+  const state = await windowState();
+  return {
+    was_running: wasRunning,
+    window_title: state.title,
+    note:
+      info.backend.major >= 3
+        ? "PrusaSlicer 3.0's window title does not show the project, and opening files through the system may not load them (not verified for 3.0): check the window, or open the file there."
+        : state.note,
+  };
 }
 
 function normalize(value: string): string {

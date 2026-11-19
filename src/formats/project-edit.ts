@@ -33,14 +33,15 @@ export function setConfigValues(text: string, values: Map<string, string>): stri
 }
 
 /** A copy of the project with a new config; the output must not exist yet. */
-export async function writeProject(input: string, output: string, configText: string): Promise<void> {
+/** A copy of the 3MF with one entry replaced (2.x: Slic3r_PE.config; 3.0: PrusaSlicer3_project.json); every other entry is copied as stored. */
+export async function writeProject(input: string, output: string, configText: string, entry: string = PROJECT_CONFIG): Promise<void> {
   const source = await ZipReader.open(input);
   try {
     const target = await ZipWriter.create(output);
     try {
       let replaced = false;
       for (const name of source.entries.keys()) {
-        if (name.toLowerCase() === PROJECT_CONFIG.toLowerCase()) {
+        if (name.toLowerCase() === entry.toLowerCase()) {
           await target.add(name, configText);
           replaced = true;
           continue;
@@ -48,7 +49,7 @@ export async function writeProject(input: string, output: string, configText: st
         const raw = (await source.readRaw(name))!;
         await target.addRaw(name, raw.entry.method, raw.entry.crc32, raw.entry.size, raw.data);
       }
-      if (!replaced) await target.add(PROJECT_CONFIG, configText);
+      if (!replaced) await target.add(entry, configText);
     } finally {
       await target.close();
     }

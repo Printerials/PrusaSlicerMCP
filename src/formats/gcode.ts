@@ -68,6 +68,12 @@ export async function readGcode(path: string): Promise<GcodeRead> {
     .sort((a, b) => b[1] - a[1])
     .map(([type, mm]) => ({ type, filament_mm: round(mm, 1), share: total > 0 ? round(mm / total, 3) : 0 }));
   report.events = scan.events;
+  // 3.0.0-alpha14 writes the preset ids in the commented config empty; its JSON block still names
+  // the printer profile (config.printer.config_name). The print and filament names are not in it.
+  if (!report.presets.printer) {
+    const printer = (scan.jsonConfig as { config?: { printer?: { config_name?: unknown } } } | null)?.config?.printer?.config_name;
+    if (typeof printer === "string" && printer) report.presets.printer = printer;
+  }
   report.thumbnails = scan.thumbnails.map(({ format, width, height }) => ({ format, width, height }));
   if (scan.config.size === 0 && !scan.jsonConfig) report.note = "No PrusaSlicer config block found: this G-code may not come from PrusaSlicer.";
   return { report, config, thumbnails: scan.thumbnails };

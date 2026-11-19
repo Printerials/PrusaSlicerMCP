@@ -31,7 +31,11 @@ const PROGRESS_LINE = /^(\d{1,3}) => (.+)$/;
  */
 export function runSlicer(binary: string, args: string[], options: RunOptions = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    // --loglevel takes effect only after a few lines are logged; SLIC3R_LOGLEVEL holds from the
+    // start (3.0.0-alpha14 printed two [info] lines on stdout otherwise).
+    const level = args[args.lastIndexOf("--loglevel") + 1];
+    const env = args.includes("--loglevel") && level ? { ...process.env, SLIC3R_LOGLEVEL: level } : process.env;
+    const child = spawn(binary, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env });
     const pid = child.pid;
     if (pid !== undefined) activePids.add(pid);
     const out: Buffer[] = [];

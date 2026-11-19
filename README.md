@@ -127,7 +127,7 @@ These were verified against PrusaSlicer 2.9.7 on macOS, and the server is built 
   - A preset switch takes over every value in which the new preset differs from the old one.
 - **Invalid enum values are replaced silently.** `fill_pattern = lightnin` in a project loads as the default `stars`, with exit 0. `edit_project` therefore has PrusaSlicer load the edited project and compares every changed value with what it loaded.
 - **A filament profile's override wins over the print setting.** Buddy3D PETG @COREONE HF0.4 has `filament_travel_ramping_lift = 1`. With `--travel-ramping-lift=0 --retract-lift=0.4` alone, the G-code header shows both values, yet a 3DBenchy still slices with ramped lifts: 1 % of its lifts are 0.4 mm. With `--filament-travel-ramping-lift=0 --filament-retract-lift=0.4` as well, all of them are (2026-11-19). So when an override's `filament_<key>` is set (not `nil`) in the resolved config or the project, `slice` and `edit_project` set it too, and say so.
-- **Print stability warnings are not in the CLI output.** "Detected print stability issues: Long bridging extrusions" (and "Collapsing overhang", "Loose extrusions", "Low bed adhesion") is in the binary, but neither 2.9.7 nor 3.0.0-alpha14 writes it to stdout, stderr or the log at any level, and the option that controls it is not in the CLI's catalogue. Only the GUI shows it: `screenshot_prusaslicer` after slicing there.
+- **Print stability warnings are not in the CLI output.** "Detected print stability issues: Long bridging extrusions" (and "Collapsing overhang", "Loose extrusions", "Low bed adhesion") is in the binary. 2.9.7 runs the check from the CLI but reports nothing, not even at `--loglevel 5`. 3.0.0-alpha14 leaves only its code in the trace log; see `stability_check` under PrusaSlicer 3.0.
 - **The CLI's 3MF export holds no print settings**, and the CLI embeds no thumbnails (it renders none).
 
 ## PrusaSlicer 3.0
@@ -138,6 +138,8 @@ These were verified against PrusaSlicer 2.9.7 on macOS, and the server is built 
 - Vendor bundles are YAML.
 - The data directory is `PrusaSlicer3` (`-dev` for alphas and betas).
 - The profile query is now `--query-print-tool-filament-profiles`.
+
+Everything measured about 3.0 so far, and what the source says that is not measured yet, is in [PRUSASLICER3.md](PRUSASLICER3.md).
 
 The server picks a backend from the binary's version (`src/slicer/v2.ts`, `src/slicer/v3.ts`) and recognizes 3.0 files by their content, also next to a 2.9 install. Point `PRUSASLICER_PATH` at the 3.0 app: the auto-detection looks for `PrusaSlicer.app` only, so it finds the 2.9 first.
 
@@ -150,11 +152,14 @@ The 3.0 backend was checked against **3.0.0-alpha14 on macOS (2026-11-17 and 202
 - **Profile queries print their JSON between log lines.** The server has them write to a file (`--output`).
 - **Unknown presets are refused by PrusaSlicer** (exit 1), not replaced by the GUI's selection as in 2.9.
 - **The app config does not say which presets the GUI has selected.** `slice` and `get_config` need printer, print and filament; the server says so when they are missing.
-- **The CLI writes ASCII G-code only**, whatever `binary_gcode`, `--binary-gcode` or the file name say. `gcode_format: "binary"` and a `.bgcode` output are refused instead of producing a mislabeled file.
+- **The G-code format follows the extension of `output_filename_format`**, not `binary_gcode` or `--binary-gcode`; `-o x.bgcode` alone gave ASCII under that name. `slice` sets the extension itself: `.bgcode` for `gcode_format: "binary"`, and for `auto` when the printer has `binary_gcode`, as 2.x does. A result in the other format is refused.
+- **`stability_check: true` on `slice`** says whether PrusaSlicer's own stability check found issues. 3.0 runs it in the CLI but drops the result; only at `--loglevel 5` does `warnings_to_append: [7]` (7 = StabilityIssues) appear in the log, without which issue it was. A project the GUI flagged with "Long bridging extrusions" gives it, a cube does not. It makes PrusaSlicer's `log.txt` grow by thousands of lines per slice.
 - **The G-code header is not faithful.** `printer_settings_id`, `print_settings_id` and `filament_settings_id` are empty, and `retract_lift`, `travel_max_lift` and `travel_ramping_lift` read 0, while the G-code itself lifts the nozzle as 2.9.7 does (a 3DBenchy: 2687 moves above the layer height against 2649, the same lift heights). So the server never judges a 3.0 slice by its header.
 - **`--info` includes the origin in the bounding box.** A model at x 115..135 comes back as `min_x = 0, size_x = 135`; negative coordinates come out right, and `--center` and `--align-xy` are ignored there. Where `min_x` or `min_y` is exactly 0, `model_info` and `export_model` export the model as STL where it lies and measure X and Y on that mesh (`bounds_note` says so). Volume, facets and manifold stay PrusaSlicer's.
 - **`--export-stl` and `--export-3mf` move a lone model to the bed centre**; 2.9 leaves it where it is. `export_model` passes `--dont-arrange` unless the call arranges, merges or duplicates.
-- Refused with 3.0, with a message saying so: `find_profiles`, `install_profiles` and `create_filament_preset` (3.0 keeps installed profiles and user presets differently), and `edit_project` (its check reads the 2.x config format). User presets do not show in `list_printers` yet.
+- **`edit_project` on a 3.0 project** rewrites only `Metadata/PrusaSlicer3_project.json`, on every bed, and copies every other entry as stored. PrusaSlicer loads the result and every value is read back per section, because 3.0 replaces a value it does not take by its built-in default without a word. Settings an object, part or height range sets itself are reported (`kept_by_objects`); they win there. The GUI shows changed presets as "(From 3mf) <name>", having no "modified" flag. A 2.x project with a 3.x server is refused: 3.0 opens it, and saving it there makes it a 3.0 project.
+- **`create_filament_preset` on 3.0** writes `presets/user/<repo>/<vendor>/filament-<name>.yaml`: `unconditional_inherits` on the parent's id, a condition for that printer model and nozzle (`printer.base_model == "COREONE" and tool.nozzle_diameter == 0.4 and tool.nozzle_high_flow`) and only the values that differ. Two mistakes in such a file break PrusaSlicer: an unknown variable in the condition hides almost every printer of the vendor, and a missing parent makes every CLI call abort (exit 134). So the server checks the printer count, the listing and every value after writing, and takes the file out again when a check fails.
+- **No installed list in 3.0.** Every profile in the vendor bundles is available. `find_profiles` lists what fits, and `install_profiles` changes nothing and says so. User presets do not show in `list_printers` yet.
 
 ## Development
 

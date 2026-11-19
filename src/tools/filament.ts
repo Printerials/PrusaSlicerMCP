@@ -1,12 +1,13 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { existsSync } from "node:fs";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import type { Presets } from "../context.ts";
 import { splitList, unescapeValue } from "../formats/ini.ts";
 import { planFilamentPreset, renderPreset, validPresetName, type StatedFilament } from "../slicer/filament-preset.ts";
 import { bundleFilamentValue } from "../slicer/installed.ts";
+import { existingIds, renderV3FilamentPreset, v3PresetTarget, v3Values, writeChecked } from "../slicer/filament-preset-v3.ts";
 import type { PrinterialsAccount } from "../printerials/account.ts";
 import { PrinterialsClient, statedFromPrinterials, variantFromExternalId } from "../printerials/client.ts";
 import { prusaTypeOf, spoolLabel, SpoolmanClient, SpoolmanError, spoolPricePerKg, type SpoolmanSpool } from "../spoolman/client.ts";
@@ -132,7 +133,9 @@ export function registerFilament(server: McpServer, { slicer, account }: ToolDep
         "Create a PrusaSlicer filament preset for a filament without an official profile: from a Spoolman spool, or from values you give " +
         "(temperatures, density, diameter, price, colour). It is the full config of the matching Prusa profile for the printer " +
         "(Generic <type> for that nozzle), with the stated values laid over it; temperatures keep the tuned value when it lies in a stated range. " +
-        "PrusaSlicer checks the result before it is kept. Usable at once by slice; the GUI shows it after a restart.",
+        "PrusaSlicer checks the result before it is kept, and it is taken out again when the check fails. 2.x: the full config in filament/<name>.ini; " +
+        "3.0: presets/user/.../filament-<name>.yaml holding only what differs from the parent, for that printer model and nozzle. " +
+        "Usable at once by slice; the GUI shows it after a restart.",
       inputSchema: z.object({
         printer: z.string().optional().describe("Printer preset to make it for. Defaults to the selected one."),
         spool_id: z.number().int().optional().describe("Take the filament from this Spoolman spool."),
@@ -166,7 +169,6 @@ export function registerFilament(server: McpServer, { slicer, account }: ToolDep
     },
     async (args) => {
       const info = await slicer.info();
-      if (info.backend.major >= 3) throw new Refusal("Creating filament presets is supported for PrusaSlicer 2.x only, so far.");
       if (!info.datadir) throw new Refusal("PrusaSlicer's data directory was not found.");
 
       const state = await slicer.appState();
@@ -224,6 +226,86 @@ export function registerFilament(server: McpServer, { slicer, account }: ToolDep
           }).filter(([, value]) => value !== undefined),
         ),
       );
+
+      if (info.backend.major >= 3) {
+        // 3.0: every vendor profile is available, user presets are YAML holding only what differs.
+        const listing = await slicer.profiles(printer);
+        const fitting3 = [...new Set(listing.prints.flatMap((p) => p.filaments))].sort();
+        let parent3 = args.parent;
+        if (!parent3) {
+          if (!stated.type) throw new Refusal("Say which polymer it is (type: PLA, PETG, ...), or name a parent preset.");
+          const escaped = stated.type.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          parent3 = fitting3.find((name) => new RegExp(`^Generic ${escaped} ?@`, "i").test(name)) ?? fitting3.find((name) => new RegExp(`^Generic ${escaped}$`, "i").test(name));
+          if (!parent3) {
+            throw new Refusal(`No "Generic ${stated.type}" profile fits ${printer}. Name a parent preset.`, {
+              generics_that_fit: fitting3.filter((name) => name.startsWith("Generic ")).slice(0, 30),
+            });
+          }
+        } else if (!fitting3.includes(parent3)) {
+          throw new Refusal(`"${parent3}" is not a filament profile that fits ${printer}.`, { did_you_mean: suggest(parent3, fitting3) });
+        }
+        const print3 = listing.prints.find((p) => p.filaments.includes(parent3!))!.name;
+        const parentPresets: Presets = { printer, print: print3, filament: parent3 };
+        const plan3 = planFilamentPreset(await slicer.resolveConfig(parentPresets), parent3, { printersCondition: "", printsCondition: "", printers: "", prints: "" }, stated);
+        const suffix3 = parent3.includes("@") ? parent3.slice(parent3.indexOf("@")) : "";
+        const base3 = catalogue
+          ? [catalogue.material.name, catalogue.colour?.name].filter(Boolean).join(" ")
+          : [stated.vendor, spool?.filament.name ?? (stated.type ? `${stated.type}` : undefined)].filter(Boolean).join(" ");
+        const name3 = args.name ?? `${base3 || "Custom filament"} ${suffix3}`.replace(/\s+/g, " ").trim();
+        if (!validPresetName(name3)) throw new Refusal(`"${name3}" cannot be a preset name: no / \\ : * ? " < > | and no trailing dot.`);
+        if (!info.datadir) throw new Refusal("PrusaSlicer 3.0's data directory was not found. Start PrusaSlicer once to create it.");
+        const target = v3PresetTarget(await slicer.savedConfigText(slicer.presetArgs(parentPresets)), info.datadir, name3);
+        const values3 = v3Values(plan3.decisions, await slicer.catalog());
+        const exists3 = existsSync(target.file);
+        if (exists3 && !args.overwrite) throw new Refusal(`A filament preset "${name3}" exists already. Pass overwrite: true to replace it, or another name.`);
+        if (!exists3 && fitting3.includes(name3)) throw new Refusal(`"${name3}" is the name of an existing profile. Choose another name.`);
+
+        const summary3 = {
+          name: name3,
+          printer,
+          parent: parent3,
+          file: target.file,
+          applies_to: target.condition,
+          from: {
+            spool: spool ? { id: spool.id, filament: spoolLabel(spool), source: spools!.via } : undefined,
+            printerials: catalogue ? { variant_id: catalogue.variantId, url: catalogue.colour?.url ?? catalogue.material.url } : undefined,
+            values: args.values ? Object.keys(args.values) : undefined,
+          },
+          set: plan3.decisions,
+          note_price: catalogue && !country ? "No price: set PRINTERIALS_COUNTRY (or give country) for the price delivered in your country." : undefined,
+        };
+        if (args.dry_run) return json({ dry_run: true, ...summary3 });
+
+        const origin3 = [catalogue ? `Printerials variant ${catalogue.variantId}` : null, spool ? `Spoolman spool ${spool.id}` : null].filter(Boolean).join(" and ") || "stated values";
+        const modelsBefore = (await slicer.printerModels("FFF")).length;
+        const content = renderV3FilamentPreset({
+          name: name3,
+          condition: target.condition,
+          parentId: target.parentId,
+          values: values3,
+          comment: `generated by prusaslicer-mcp from ${origin3} on ${parent3}`,
+          ids: exists3 ? ((await existingIds(target.file)) ?? undefined) : undefined,
+        });
+        // A bad condition hides the vendor's printers and a bad parent crashes every call: check, and roll back.
+        await writeChecked(
+          target.file,
+          content,
+          async () => {
+            const modelsAfter = (await slicer.printerModels("FFF")).length;
+            if (modelsAfter !== modelsBefore) {
+              throw new Refusal(`With the new preset PrusaSlicer listed ${modelsAfter} printer models instead of ${modelsBefore}, so it was taken out again.`);
+            }
+            const resolved = await slicer.resolveConfig(await slicer.completePresets({ printer, print: print3, filament: name3 }));
+            const off = plan3.decisions.filter(({ key, value }) => {
+              const got = resolved.get(key);
+              return got === undefined || !sameSetting(got, value);
+            });
+            if (off.length) throw new Refusal("PrusaSlicer read other values than were written.", { mismatches: off.map(({ key, value }) => ({ key, written: value, read: resolved.get(key) ?? null })) });
+          },
+          () => slicer.invalidate(),
+        );
+        return json({ ...summary3, note: "slice can use it now. PrusaSlicer 3.0's GUI lists it after a restart (it reads presets only when it starts)." });
+      }
 
       // The parent: the generic of that polymer fitting this printer, as PrusaSlicer decides fitting.
       const fitting = await slicer.availableFilaments(printer);
@@ -364,4 +446,14 @@ export function registerFilament(server: McpServer, { slicer, account }: ToolDep
       });
     },
   );
+}
+
+/** A value PrusaSlicer resolved against the 2.x text the plan wrote: numbers by value, text unquoted. */
+function sameSetting(resolved: string, written: string): boolean {
+  const a = unescapeValue(splitList(resolved)[0] ?? resolved).trim();
+  const b = unescapeValue(splitList(written)[0] ?? written).trim();
+  if (a === b) return true;
+  const x = Number(a);
+  const y = Number(b);
+  return a !== "" && b !== "" && Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) < 1e-9;
 }

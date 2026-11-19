@@ -235,6 +235,68 @@
      "MacroSlotOverrides"
     ],
     "value": 200
+   },
+   {
+    "name": "bed_temperature",
+    "max": 300.0,
+    "min": 0.0,
+    "type": "Int",
+    "location": "Filament",
+    "overrides_in": [
+     "MacroSlotOverrides"
+    ],
+    "value": 0
+   },
+   {
+    "name": "first_layer_temperature",
+    "max": 1500.0,
+    "min": 0.0,
+    "type": "Int",
+    "location": "Filament",
+    "overrides_in": [
+     "MacroSlotOverrides"
+    ],
+    "value": 200
+   },
+   {
+    "name": "filament_vendor",
+    "max": null,
+    "min": null,
+    "type": "String",
+    "location": "Filament",
+    "overrides_in": [],
+    "value": "(Unknown)"
+   },
+   {
+    "name": "filament_colour",
+    "max": null,
+    "min": null,
+    "type": "String",
+    "location": "Filament",
+    "overrides_in": [
+     "MacroSlotOverrides"
+    ],
+    "value": "#29B2B2"
+   },
+   {
+    "name": "filament_notes",
+    "max": null,
+    "min": null,
+    "type": "String",
+    "location": "Filament",
+    "overrides_in": [],
+    "value": ""
+   },
+   {
+    "name": "filament_density",
+    "max": null,
+    "min": 0.0,
+    "type": "Float",
+    "location": "Filament",
+    "overrides_in": [
+     "MacroSlotOverrides"
+    ],
+    "value": 0.0
    }
   ]
  }

@@ -18,7 +18,19 @@ import { json, progressReporter, tool, WRITES_NEW_FILES, type ToolDeps } from ".
 export const MODEL_EXTENSIONS = [".stl", ".3mf", ".obj", ".step", ".stp", ".amf"];
 
 /** PrusaSlicer's console noise that says nothing about the print. */
-const NOISE = /^(\d{1,3} => |Slicing result exported|File exported|PrusaSlicer-\d)/;
+const NOISE = /^(\d{1,3} => |Slicing result exported|File exported|PrusaSlicer-\d|\[\d{4}-\d\d-\d\d )/;
+
+/**
+ * The warning codes 3.0 sends to the GUI (libslic3r/include/libslic3r/SlicingStatus.hpp,
+ * WarningCode). Only 7 is confirmed against the 3.0.0-alpha14 binary: it appeared for a project
+ * the GUI flagged with "Long bridging extrusions". The source read is newer than that binary.
+ */
+const WARNING_CODES = [
+  "None", "BedTempsDiffer", "BedTempsChanged", "FilamentShrinkageDiffer", "WipeTowerNozzleDiameterDiffer",
+  "SupportNozzleDiameterDiffer", "SupportsTurnedOff", "StabilityIssues", "EmptyLayers", "CustomGCodeReservedKeywords",
+  "InvalidToolchange", "CloseToPrimingRegions", "ToolpathOutsideBuildVolume", "GCodeConflict",
+  "XYSizeCompensationIgnoredMultiMaterialPainting", "XYSizeCompensationIgnoredFuzzySkinPainting", "VirtualExtruderMixesFilamentTypes",
+];
 
 export function registerSlice(server: McpServer, { slicer, account }: ToolDeps): void {
   tool(
@@ -48,6 +60,14 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         overwrite: z.boolean().default(false),
         allow_post_process: z.boolean().default(false).describe("Run the post_process scripts the presets or the project define."),
         spool_id: z.number().int().optional().describe("A spool (list_spools) to print from: checks that enough is left on it and prices the print at what it cost."),
+        stability_check: z
+          .boolean()
+          .default(false)
+          .describe(
+            "PrusaSlicer 3.x: say whether PrusaSlicer's own print stability check found issues (long bridging extrusions, collapsing overhangs, " +
+              "loose extrusions, low bed adhesion). Which issue it was, only the GUI shows. Objects that get supports are not checked. " +
+              "Slices with trace logging, which adds thousands of lines to PrusaSlicer's log.txt.",
+          ),
       }),
       annotations: WRITES_NEW_FILES,
     },
@@ -89,6 +109,11 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
       }
 
       const info = await slicer.info();
+      if (args.stability_check && !info.backend.patchConfig) {
+        throw new Refusal(
+          "stability_check needs PrusaSlicer 3.x. 2.9's CLI runs the check but reports nothing, not even in its trace log; only the GUI shows it.",
+        );
+      }
       const catalog = await slicer.catalog();
       const requestedOverrides = checkOverrides(args.overrides, catalog);
       // 2.x: a filament's filament_<key> wins over <key>; the value asked for must be the one that slices.
@@ -129,8 +154,16 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         : null;
       const fixed = new Map<string, string>();
       if (!args.allow_post_process) fixed.set("post_process", "");
-      if (format !== "auto") fixed.set("binary_gcode", format === "binary" ? "1" : "0");
-      if (projectStem) fixed.set("output_filename_format", "project.gcode");
+      if (baseConfig) {
+        // 3.0 picks ASCII or binary by the extension of output_filename_format; binary_gcode and
+        // --binary-gcode do not count (3.0.0-alpha14: a ".bgcode" name gave GCDE, binary_gcode true
+        // with Prusa's ".gcode" name gave ASCII). "auto" follows the printer's binary_gcode, as 2.x does.
+        const saved = (JSON.parse(baseConfig) as { configuration?: Record<string, Record<string, unknown>> }).configuration ?? {};
+        const binary = format === "binary" || (format === "auto" && saved.printer_settings?.binary_gcode === true);
+        const name = projectStem ? "project" : String(saved.print_settings?.output_filename_format ?? "{input_filename_base}").replace(/\.b?gcode$/i, "");
+        fixed.set("output_filename_format", `${name}${binary ? ".bgcode" : ".gcode"}`);
+        fixed.set("binary_gcode", binary ? "1" : "0");
+      }
       const changes = new Map([...requestedOverrides, ...fixed]);
       const patch = patchConfig && baseConfig ? patchConfig(baseConfig, changes, catalog) : null;
       const patchedConfig = patch?.config ?? null;
@@ -170,7 +203,7 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
               ...settingArgs,
               ...transformArgs(args.transforms),
               "--loglevel",
-              "2",
+              args.stability_check ? "5" : "2",
               "--output",
               staging,
               ...inputs,
@@ -253,10 +286,32 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         post_process: args.allow_post_process ? "allowed" : "disabled",
         messages: messages.length ? messages : undefined,
         spool,
+        stability: args.stability_check ? stabilityOf(result.run.stdout + result.run.stderr) : undefined,
         result: report,
       });
     },
   );
+}
+
+/**
+ * The warnings PrusaSlicer 3.0 sent while slicing, from its trace log: the only place the CLI
+ * leaves them ("status_update: {... warnings_to_append: [7] ...}"). The text of the warning is
+ * not in the log, only its code.
+ */
+export function stabilityOf(log: string): { issues_found: boolean; warnings: Array<{ code: number; name: string }>; note: string } {
+  const codes = new Set<number>();
+  for (const match of log.matchAll(/warnings_to_append: \[([\d, ]*)\]/g)) {
+    for (const code of match[1]!.split(",").map((part) => part.trim()).filter(Boolean)) codes.add(Number(code));
+  }
+  codes.delete(0);
+  const warnings = [...codes].sort((a, b) => a - b).map((code) => ({ code, name: WARNING_CODES[code] ?? "unknown" }));
+  return {
+    issues_found: codes.has(7),
+    warnings,
+    note: codes.has(7)
+      ? "PrusaSlicer's stability check found issues. Which ones (long bridges, overhangs, loose extrusions, bed adhesion) only the GUI shows: slice there and look, or screenshot_prusaslicer."
+      : "PrusaSlicer's stability check found no issues. Objects that get supports are not checked.",
+  };
 }
 
 /** "name.bgcode", or "name-2.bgcode" when that exists, and so on. */

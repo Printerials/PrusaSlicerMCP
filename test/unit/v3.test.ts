@@ -8,6 +8,8 @@ import { splitList, unescapeValue } from "../../src/formats/ini.ts";
 import { assertPresetsUsed } from "../../src/context.ts";
 import { checkPatched, patchSavedConfig } from "../../src/slicer/v3-config.ts";
 import { filamentShadows } from "../../src/tools/args.ts";
+import { stabilityOf } from "../../src/tools/slice.ts";
+import { existingIds, renderV3FilamentPreset, v3PresetTarget, v3Values, writeChecked } from "../../src/slicer/filament-preset-v3.ts";
 import { v3Backend } from "../../src/slicer/v3.ts";
 import { stlBounds } from "../../src/formats/stl.ts";
 import { readProject } from "../../src/formats/threemf.ts";
@@ -206,6 +208,64 @@ test("3.0 project: preset names come from the config container's preset block", 
       filament: ["Prusament PLA @COREONE HF0.4@COREONE 0.4"],
     });
     assert.equal(project.config.get("fill_density"), "15%");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("stability: the warning codes in alpha14's trace log", () => {
+  // As 3.0.0-alpha14 logs them at --loglevel 5 (SlicingInteractor.cpp:216).
+  const line = (codes: string) =>
+    `[2026-11-19 15:56:21.403] [trace] [SlicingInteractor.cpp:216] {project_id: 0, bed_id: 23}: status_update: {code: Updating, clear_errors: 0, , errors_to_append: [], clear_warnings: 0, warnings_to_append: [${codes}], clear_progress: 0, progress: }`;
+  const flagged = stabilityOf([line(""), line("7"), line("")].join("\n"));
+  assert.equal(flagged.issues_found, true);
+  assert.deepEqual(flagged.warnings, [{ code: 7, name: "StabilityIssues" }]);
+  const clean = stabilityOf([line(""), line("")].join("\n"));
+  assert.equal(clean.issues_found, false);
+  assert.deepEqual(clean.warnings, []);
+  assert.deepEqual(stabilityOf(line("1, 7")).warnings.map((w) => w.name), ["BedTempsDiffer", "StabilityIssues"]);
+});
+
+test("3.0 filament preset: where it goes, what it applies to, and its typed values", async () => {
+  const target = v3PresetTarget(await read("saved-config.json"), "/data", "My PLA @COREONE HF0.4");
+  assert.equal(target.file, "/data/presets/user/prusa-research-fff/PrusaResearch/filament-My PLA @COREONE HF0.4.yaml");
+  // The parent's evaluated id: a hash for Prusament PLA, "Generic PLA" for the generic.
+  assert.equal(target.parentId, "9ql4eJIDTX+KVNeIbbae2g");
+  assert.equal(target.condition, 'printer.base_model == "COREONE" and tool.nozzle_diameter == 0.4 and tool.nozzle_high_flow');
+  const values = v3Values(
+    [
+      { key: "temperature", value: "215" },
+      { key: "filament_density", value: "1.24" },
+      { key: "filament_colour", value: "#FF8000" },
+      { key: "filament_vendor", value: "Acme" },
+      { key: "filament_notes", value: '"line one\\nwith \\"quotes\\""' },
+    ],
+    await catalog(),
+  );
+  assert.deepEqual(values, { temperature: 215, filament_density: 1.24, filament_colour: "#FF8000", filament_vendor: "Acme", filament_notes: 'line one\nwith "quotes"' });
+  const yaml = renderV3FilamentPreset({ name: "My PLA", condition: target.condition, parentId: "Generic PLA", values, comment: "test", ids: { root: "r-1", variant: "v-1" } });
+  assert.match(yaml, /^kind: filament$/m);
+  assert.match(yaml, /^    unconditional_inherits: \["Generic PLA"\]$/m);
+  assert.match(yaml, /^      filament_notes: "line one\\nwith \\"quotes\\""$/m);
+  assert.match(yaml, /^      temperature: 215$/m);
+});
+
+test("3.0 filament preset: a failed check puts back what was there", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "preset3-"));
+  try {
+    const file = join(dir, "presets", "user", "filament-x.yaml");
+    let changes = 0;
+    const changed = () => changes++;
+    const fail = async () => {
+      throw new Refusal("check failed");
+    };
+    await assert.rejects(writeChecked(file, "new", fail, changed), /check failed/);
+    await assert.rejects(readFile(file, "utf8"), /ENOENT/, "a new preset that fails its check is removed");
+    await writeChecked(file, 'kind: filament\nid: "root-1"\nvariants:\n  - id: "variant-1"\n', async () => {}, changed);
+    assert.deepEqual(await existingIds(file), { root: "root-1", variant: "variant-1" });
+    await assert.rejects(writeChecked(file, "broken", fail, changed), /check failed/);
+    assert.match(await readFile(file, "utf8"), /root-1/, "an overwritten preset is restored");
+    assert.equal(changes, 5);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

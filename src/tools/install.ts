@@ -51,7 +51,8 @@ export function registerInstall(server: McpServer, { slicer }: ToolDeps): void {
       description:
         "Search the official profiles in PrusaSlicer's installed vendor bundles, including the ones not enabled yet (the Configuration Wizard's choice). " +
         "filament: the filaments that fit a printer, as PrusaSlicer itself evaluates compatibility, each marked installed or not. " +
-        "printer: printer models and nozzle variants with their preset names. install_profiles enables what is not installed.",
+        "printer: printer models and nozzle variants with their preset names. install_profiles enables what is not installed. " +
+        "PrusaSlicer 3.0 has no installed list: there everything is available, and this lists what fits.",
       inputSchema: z.object({
         kind: z.enum(["filament", "printer"]),
         search: z.string().optional().describe("Words that must all appear, such as 'buddy3d petg' or 'mk4s 0.6'."),
@@ -63,6 +64,24 @@ export function registerInstall(server: McpServer, { slicer }: ToolDeps): void {
     },
     async ({ kind, search, printer, only_not_installed, limit }) => {
       const match = matcher(search);
+      if ((await slicer.info()).backend.major >= 3) {
+        // 3.0 has no installed list: every profile of the vendor bundles is available (checked with
+        // 3.0.0-alpha14: 31 printer models and ~247 filaments for a CORE One, no wizard step).
+        const note = "PrusaSlicer 3.0 has no installed list: every profile in its vendor bundles is available to slice with.";
+        if (kind === "filament") {
+          if (!printer) throw new Refusal("Give a printer: PrusaSlicer 3.0 does not keep its selected presets where this server can read them.");
+          const fits = [...new Set((await slicer.profiles(printer)).prints.flatMap((p) => p.filaments))].sort();
+          const capped = capList(only_not_installed ? [] : fits.filter(match).map((name) => ({ name, installed: true })), limit);
+          return json({ printer, fitting_filaments: fits.length, matches: capped.items, total_matches: capped.total, truncated: capped.truncated || undefined, note });
+        }
+        const rows = (await slicer.printerModels("FFF")).flatMap((model) =>
+          model.variants.flatMap((variant) =>
+            variant.profiles.map((profile) => ({ preset: profile.name, vendor: model.vendor, model: model.name, variant: variant.name, installed: true })),
+          ),
+        );
+        const capped = capList(only_not_installed ? [] : rows.filter((row) => match(`${row.preset} ${row.vendor} ${row.model} ${row.variant}`)), limit);
+        return json({ matches: capped.items, total_matches: capped.total, truncated: capped.truncated || undefined, note });
+      }
       const { installed } = await slicer.installedProfiles();
 
       if (kind === "filament") {
@@ -114,6 +133,7 @@ export function registerInstall(server: McpServer, { slicer }: ToolDeps): void {
       title: "Install or remove profiles",
       description:
         "Enable or disable official filament and printer profiles in PrusaSlicer, as the Configuration Wizard does (PrusaSlicer.ini). " +
+        "PrusaSlicer 3.0 needs none of this: every profile is available, and the call changes nothing. " +
         "Names are filament or printer preset names from find_profiles. PrusaSlicer must be closed: it keeps this list in memory and would " +
         "write its own back on quitting. Makes a backup (PrusaSlicer.ini.mcp-backup) first. Use dry_run to see the change without writing.",
       inputSchema: z.object({
@@ -124,6 +144,18 @@ export function registerInstall(server: McpServer, { slicer }: ToolDeps): void {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     async ({ install = [], uninstall = [], dry_run }) => {
+      if ((await slicer.info()).backend.major >= 3) {
+        // Nothing to switch on in 3.0. Favourites only filter the GUI's lists and live in its app
+        // config, which the GUI rewrites when it closes; vendor bundles come from the preset updater.
+        return json({
+          installed: [],
+          uninstalled: [],
+          dry_run: dry_run || undefined,
+          note:
+            "Nothing changed: PrusaSlicer 3.0 has no installed list, every profile in its vendor bundles is already available " +
+            `(asked: ${[...install, ...uninstall].join(", ") || "nothing"}). Only the GUI's favourites filter what it shows.`,
+        });
+      }
       if (install.length === 0 && uninstall.length === 0) throw new Refusal("Give names to install or uninstall.");
       const bundles = await slicer.bundles();
       const filamentNames = new Set(bundles.flatMap((bundle) => [...bundle.filaments]));
