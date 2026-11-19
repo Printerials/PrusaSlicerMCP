@@ -31,6 +31,8 @@ export function v3Backend(prerelease: boolean): Backend {
     queryToFile: true,
     patchConfig: patchSavedConfig,
     keepsGuiSelection: false,
+    infoBoundsIncludeOrigin: true,
+    exportArranges: true,
 
     defaultDatadir() {
       const name = prerelease ? "PrusaSlicer3-dev" : "PrusaSlicer3";
@@ -72,15 +74,13 @@ export function v3Backend(prerelease: boolean): Backend {
     parseSavedConfig(text) {
       const data = JSON.parse(text) as { preset?: SavedPreset; configuration?: Record<string, unknown> };
       const config = flattenConfiguration(data.configuration ?? {});
-      // 3.0 keeps the preset names beside the settings. The printer's own name is the one under
-      // hw_config (preset.printer.name is the model). Stored under the 2.x keys so both majors
+      // 3.0 keeps the preset names beside the settings. Stored under the 2.x keys so both majors
       // are checked the same way.
-      const { hw_config, print, materials } = data.preset ?? {};
-      if (hw_config?.config_name) config.set("printer_settings_id", hw_config.config_name);
-      if (print?.name) config.set("print_settings_id", print.name);
-      const names = (materials ?? []).map((material) => material.name).filter((name): name is string => Boolean(name));
+      const names = presetNames(data.preset);
+      if (names.printer) config.set("printer_settings_id", names.printer);
+      if (names.print) config.set("print_settings_id", names.print);
       // Quoted and ";"-separated, as 2.x writes a list of strings: names may hold commas.
-      if (names.length) config.set("filament_settings_id", names.map((name) => `"${name.replace(/["\\]/g, "\\$&")}"`).join(";"));
+      if (names.filaments.length) config.set("filament_settings_id", names.filaments.map((name) => `"${name.replace(/["\\]/g, "\\$&")}"`).join(";"));
       return config;
     },
 
@@ -105,6 +105,20 @@ interface SavedPreset {
   hw_config?: { config_name?: string };
   print?: { name?: string };
   materials?: Array<{ name?: string }>;
+}
+
+/**
+ * The preset names in a 3.0 "preset" block, the same in --save output and in a 3MF project's
+ * config container (seen in 3.0.0-alpha14). The printer profile is hw_config.config_name:
+ * preset.printer.name is the printer model.
+ */
+export function presetNames(preset: unknown): { printer: string | null; print: string | null; filaments: string[] } {
+  const { hw_config, print, materials } = (preset ?? {}) as SavedPreset;
+  return {
+    printer: hw_config?.config_name || null,
+    print: print?.name || null,
+    filaments: (Array.isArray(materials) ? materials : []).map((material) => material?.name).filter((name): name is string => Boolean(name)),
+  };
 }
 
 /**

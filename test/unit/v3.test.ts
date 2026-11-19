@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseConfigSchema, type SettingInfo } from "../../src/formats/help.ts";
-import { parseCommentedConfig, splitList, unescapeValue } from "../../src/formats/ini.ts";
+import { splitList, unescapeValue } from "../../src/formats/ini.ts";
 import { assertPresetsUsed } from "../../src/context.ts";
 import { patchSavedConfig } from "../../src/slicer/v3-config.ts";
 import { v3Backend } from "../../src/slicer/v3.ts";
-import { checkOverrides } from "../../src/slicer/verify.ts";
+import { checkApplied } from "../../src/slicer/verify.ts";
+import { stlBounds } from "../../src/formats/stl.ts";
+import { readProject } from "../../src/formats/threemf.ts";
+import { writeZip } from "../helpers/zip.ts";
 import { Refusal } from "../../src/util/errors.ts";
 
 // Made with PrusaSlicer 3.0.0-alpha14 on macOS, 2026-11-17.
@@ -102,22 +106,68 @@ test("profile and model queries of alpha14 parse", async () => {
   assert.equal(listing.prints[0]!.filaments.length, 4);
 });
 
-test("override check: confirmed, ignored (still the old value) and unverifiable", async () => {
+test("applied check: what PrusaSlicer saves back after loading the written config", async () => {
   const backend = v3Backend(true);
-  const before = backend.parseSavedConfig(await read("saved-config.json"));
-  const gcode = parseCommentedConfig(await read("gcode-header.txt"));
-  const check = checkOverrides(
-    new Map([
-      ["thick_bridges", "1"], // the header says 1
-      ["fill_density", "25%"], // the header still says 15%, the old value
-      ["retract_lift", "0.5"], // the header says 0: neither old (0.2) nor new
-      ["brim_width", "5"], // not in the header
-      ["top_solid_min_thickness", "3.2"],
-    ]),
-    before,
-    gcode,
-  );
-  assert.deepEqual(check.confirmed, ["thick_bridges", "top_solid_min_thickness"]);
-  assert.deepEqual(check.ignored, [{ key: "fill_density", requested: "25%", found: "15%" }]);
-  assert.deepEqual(check.unverified.map((entry) => entry.key), ["retract_lift", "brim_width"]);
+  const saved = await read("saved-config.json");
+  const settings = await catalog();
+  const changes = new Map([
+    ["thick_bridges", "1"],
+    ["fill_density", "25"],
+    ["retract_lift", "0.4"],
+    ["post_process", ""],
+  ]);
+  const written = backend.parseSavedConfig(patchSavedConfig(saved, changes, settings));
+  // As if PrusaSlicer loaded it all, but replaced fill_density.
+  const loaded = new Map(written);
+  loaded.set("fill_density", "15%");
+  loaded.delete("retract_lift");
+  const check = checkApplied(changes.keys(), written, loaded);
+  assert.deepEqual(check.confirmed, ["thick_bridges", "post_process"]);
+  assert.deepEqual(check.rejected, [{ key: "fill_density", expected: "25%", found: "15%" }]);
+  assert.deepEqual(check.missing, ["retract_lift"]);
+  // A value that equals the old one is fine when it was asked for: the G-code header was no judge.
+  const same = backend.parseSavedConfig(patchSavedConfig(saved, new Map([["retract_lift", "0.2"]]), settings));
+  assert.deepEqual(checkApplied(["retract_lift"], same, same).confirmed, ["retract_lift"]);
+});
+
+test("STL bounds: binary and ASCII, at any position", async () => {
+  const cube = join(import.meta.dirname, "..", "fixtures", "cube.stl");
+  assert.deepEqual(await stlBounds(cube), { min: [0, 0, 0], max: [20, 20, 20] });
+  const dir = await mkdtemp(join(tmpdir(), "stl-"));
+  try {
+    // The same cube moved to x 115..135, y 100..120: where alpha14's --info says 0..135.
+    const data = Buffer.from(await readFile(cube));
+    const count = data.readUInt32LE(80);
+    for (let facet = 0; facet < count; facet++) {
+      for (let vertex = 0; vertex < 3; vertex++) {
+        const at = 84 + facet * 50 + 12 + vertex * 12;
+        data.writeFloatLE(data.readFloatLE(at) + 115, at);
+        data.writeFloatLE(data.readFloatLE(at + 4) + 100, at + 4);
+      }
+    }
+    await writeFile(join(dir, "moved.stl"), data);
+    assert.deepEqual(await stlBounds(join(dir, "moved.stl")), { min: [115, 100, 0], max: [135, 120, 20] });
+    await writeFile(join(dir, "ascii.stl"), "solid t\nfacet normal 0 0 1\nouter loop\nvertex -1 2 3\nvertex 4 -5 6\nvertex 0 0 -7\nendloop\nendfacet\nendsolid t\n");
+    assert.deepEqual(await stlBounds(join(dir, "ascii.stl")), { min: [-1, -5, -7], max: [4, 2, 6] });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("3.0 project: preset names come from the config container's preset block", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "project3-"));
+  try {
+    const file = join(dir, "bracket.3mf");
+    await writeZip(file, { "Metadata/PrusaSlicer3_project.json": await read("project.json") });
+    const project = await readProject(file);
+    assert.equal(project.kind, "prusaslicer-3");
+    assert.deepEqual(project.presets, {
+      printer: "Prusa CORE One & One+ 0.4 HF",
+      print: "0.15mm BALANCED @COREONE 0.4HF",
+      filament: ["Prusament PLA @COREONE HF0.4@COREONE 0.4"],
+    });
+    assert.equal(project.config.get("fill_density"), "15%");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

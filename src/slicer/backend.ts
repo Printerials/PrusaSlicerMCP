@@ -33,6 +33,13 @@ export interface Backend {
   /** Arguments that write the resolved config of the given presets to a file. */
   saveConfigArgs(outputPath: string): string[];
   parseSavedConfig(text: string): FlatConfig;
+  /**
+   * True when --info reports a bounding box that includes the origin: 3.0.0-alpha14 gives a model
+   * at x 115..135 as min_x 0, size_x 135 (negative coordinates come out right).
+   */
+  infoBoundsIncludeOrigin: boolean;
+  /** True when --export-stl and --export-3mf place a lone model on the bed centre unless told not to (3.0). */
+  exportArranges: boolean;
   /** True when the app config says which presets the GUI has selected (3.0 does not keep that). */
   keepsGuiSelection: boolean;
   readAppState(datadir: string): Promise<AppState>;

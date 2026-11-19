@@ -139,17 +139,19 @@ These were verified against PrusaSlicer 2.9.7 on macOS, and the server is built 
 
 The server picks a backend from the binary's version (`src/slicer/v2.ts`, `src/slicer/v3.ts`) and recognizes 3.0 files by their content, also next to a 2.9 install. Point `PRUSASLICER_PATH` at the 3.0 app: the auto-detection looks for `PrusaSlicer.app` only, so it finds the 2.9 first.
 
-The 3.0 backend was checked against **3.0.0-alpha14 on macOS (2026-11-17)**: `slicer_status`, `list_printers`, `list_profiles`, `describe_setting`, `slice` of models and of a 3.0 project, with overrides. The unit tests use fixtures made by that binary (`test/fixtures/3.0.0-alpha14`); `test/integration-v3.test.ts` runs when `PRUSASLICER_PATH` is a 3.x. What alpha14 does differently, as measured:
+The 3.0 backend was checked against **3.0.0-alpha14 on macOS (2026-11-17 and 2026-11-19)**, tool by tool through an MCP client: `slicer_status`, `list_printers`, `list_profiles`, `get_config`, `describe_setting`, `slice` (models, a 3.0 project, overrides, transforms), `model_info`, `export_model`, `project_info`, `gcode_info`, `postprocess_gcode` and `screenshot_prusaslicer` work. A 3DBenchy slices the same in both versions: 11.12 g and 52m35s with 2.9.7, 11.13 g and 52m41s with alpha14 (CORE One, 0.15mm BALANCED, Prusament PLA), with as many travel lifts. The unit tests use fixtures made by that binary (`test/fixtures/3.0.0-alpha14`). What alpha14 does differently, as measured:
 
 - **Settings given as command line options are ignored, with exit code 0.** `--thick-bridges=1` changes nothing, and so does a `--load` next to presets; `--load` may be given once. Only a complete config in the format `--save` writes works. So `slice` saves the config of the presets (or of the project), changes the values in it (`src/slicer/v3-config.ts`, typed and range checked by the schema) and slices with that file. The fixed switches (`post_process` off, `output_filename_format` for projects) go the same way.
-- **Every override is read back** from the G-code's config block. A value that still has its old value is refused and the G-code removed; a value the header does not show is reported in `messages`. `overrides_confirmed` lists what was confirmed.
+- **Every changed value is read back before slicing.** PrusaSlicer loads the written config and saves it again (`--load … --save …`); a value that does not come back as written is refused, and nothing is sliced. `overrides_confirmed` lists the overrides that came back. Not the G-code header: see below.
 - **No settings list in `--help-fff`.** The catalogue comes from `--export-config-schema`: types, ranges, enum values and the section of each setting, but no descriptions (`describe_setting` shows none for 3.0).
 - **Profile queries print their JSON between log lines.** The server has them write to a file (`--output`).
 - **Unknown presets are refused by PrusaSlicer** (exit 1), not replaced by the GUI's selection as in 2.9.
 - **The app config does not say which presets the GUI has selected.** `slice` and `get_config` need printer, print and filament; the server says so when they are missing.
 - **The CLI writes ASCII G-code only**, whatever `binary_gcode`, `--binary-gcode` or the file name say. `gcode_format: "binary"` and a `.bgcode` output are refused instead of producing a mislabeled file.
-- **The G-code header has empty `printer_settings_id`, `print_settings_id` and `filament_settings_id`**, and shows `retract_lift = 0` where the config says 0.2, the same for presets and for `--load`. Time and filament use are the slicer's own numbers, but compare a lift-dependent result with 2.9 before trusting it.
-- Not covered for 3.0: `install_profiles` and `find_profiles` (they refuse), user presets in `list_printers` (3.0 keeps them elsewhere), and `edit_project` (written for the 2.x config format, not tried on a 3.0 project).
+- **The G-code header is not faithful.** `printer_settings_id`, `print_settings_id` and `filament_settings_id` are empty, and `retract_lift`, `travel_max_lift` and `travel_ramping_lift` read 0, while the G-code itself lifts the nozzle as 2.9.7 does (a 3DBenchy: 2687 moves above the layer height against 2649, the same lift heights). So the server never judges a 3.0 slice by its header.
+- **`--info` includes the origin in the bounding box.** A model at x 115..135 comes back as `min_x = 0, size_x = 135`; negative coordinates come out right, and `--center` and `--align-xy` are ignored there. Where `min_x` or `min_y` is exactly 0, `model_info` and `export_model` export the model as STL where it lies and measure X and Y on that mesh (`bounds_note` says so). Volume, facets and manifold stay PrusaSlicer's.
+- **`--export-stl` and `--export-3mf` move a lone model to the bed centre**; 2.9 leaves it where it is. `export_model` passes `--dont-arrange` unless the call arranges, merges or duplicates.
+- Refused with 3.0, with a message saying so: `find_profiles`, `install_profiles` and `create_filament_preset` (3.0 keeps installed profiles and user presets differently), and `edit_project` (its check reads the 2.x config format). User presets do not show in `list_printers` yet.
 
 ## Development
 
@@ -160,7 +162,12 @@ npm test                  # unit tests, no PrusaSlicer needed
 npm run test:integration  # end to end through an MCP client against the installed PrusaSlicer
 ```
 
-The integration test writes only to a temporary directory and does not open anything in the GUI. The fixtures in `test/fixtures` were made with PrusaSlicer 2.9.7: a 20 mm cube, the same cube at 25% sliced for a CORE One, and the output of `--help`, `--help-fff` and `--info`.
+The integration tests write only to a temporary directory and do not open anything in the GUI. The fixtures in `test/fixtures` were made with PrusaSlicer 2.9.7: a 20 mm cube, the same cube at 25% sliced for a CORE One, and the output of `--help`, `--help-fff` and `--info`; `test/fixtures/3.0.0-alpha14` was made with that alpha.
+
+- **Against 3.0:** `PRUSASLICER_PATH=/Applications/PrusaSlicer-3.0.0-alpha14.app npm run test:integration` runs `test/integration-v3.test.ts` and the rest against 3.0 (the 2.x-only tests skip).
+- **Both, compared:** with `PRUSASLICER_PATH_3` set to the 3.0 app, `test/integration-benchy.test.ts` slices a 3DBenchy with both versions and compares filament, time and lifts.
+- **3DBenchy** ([CreativeTools/3DBenchy](https://github.com/CreativeTools/3DBenchy), public domain under CC0 since February 2025) is not in the repository: 11 MB. The test downloads `Single-part/3DBenchy.stl` once, checks its SHA-256 and caches it in `~/Library/Caches/PrusaSlicerMCP/test-models` (`PRUSASLICER_MCP_TEST_CACHE` to put it elsewhere). Offline and without the cache, those tests skip.
+- **Keep the Mac awake** for the integration tests (`caffeinate -i npm run test:integration`). In sleep the clock runs on, and every PrusaSlicer call that was running hits its 60 s limit on waking.
 
 ## Credits
 

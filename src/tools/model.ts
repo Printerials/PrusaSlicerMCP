@@ -1,8 +1,11 @@
 import type { CallToolResult, McpServer } from "@modelcontextprotocol/server";
-import { readdir } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { parseInfo } from "../formats/info.ts";
+import { parseInfo, type ModelInfo } from "../formats/info.ts";
+import { stlBounds } from "../formats/stl.ts";
+import type { SlicerContext } from "../context.ts";
 import { readProject } from "../formats/threemf.ts";
 import { describeFailure } from "../slicer/run.ts";
 import { Refusal } from "../util/errors.ts";
@@ -30,7 +33,7 @@ export function registerModel(server: McpServer, { slicer }: ToolDeps): void {
       const result = await slicer.run(["--info", ...files], { timeoutMs: slicer.sliceTimeoutMs });
       const models = parseInfo(result.stdout);
       if (models.length === 0) throw new Refusal(describeFailure(result, "Reading the model"));
-      return json({ models });
+      return json({ models: await withMeshBounds(slicer, files, models) });
     },
   );
 
@@ -138,11 +141,20 @@ export function registerModel(server: McpServer, { slicer }: ToolDeps): void {
       const destDir = target ? dirname(target) : dirname(files[0]!);
 
       const written = await withStaging(destDir, async (staging) => {
+        // 3.0 moves a lone model to the bed centre on export; 2.x leaves it where it is. Kept the
+        // 2.x way unless the caller arranges, merges or duplicates.
+        const keepPlace =
+          (await slicer.info()).backend.exportArranges &&
+          transforms?.dont_arrange === undefined &&
+          !transforms?.merge &&
+          !transforms?.duplicate &&
+          !transforms?.duplicate_grid;
         const run = await slicer.sliceQueue.run(() =>
           slicer.run(
             [
               `--export-${format}`,
               ...transformArgs(transforms),
+              ...(keepPlace ? ["--dont-arrange"] : []),
               ...(cut_z !== undefined ? [`--cut=${cut_z}`] : []),
               "--output",
               staging,
@@ -170,8 +182,43 @@ export function registerModel(server: McpServer, { slicer }: ToolDeps): void {
       });
 
       const info = format === "obj" ? null : parseInfo((await slicer.run(["--info", ...written])).stdout);
-      return json({ outputs: written, models: info ?? undefined });
+      return json({ outputs: written, models: info ? await withMeshBounds(slicer, written, info) : undefined });
     },
+  );
+}
+
+/**
+ * PrusaSlicer 3.0.0-alpha14's --info includes the origin in the bounding box, so a model lying at
+ * positive X or Y reports min 0 and too large a size. Where min_x or min_y is exactly 0, the model
+ * is exported as STL where it lies and X/Y are measured on that mesh. Z stays PrusaSlicer's: both
+ * versions put the model on the bed. Volume, facets and the rest stay PrusaSlicer's own.
+ */
+async function withMeshBounds(slicer: SlicerContext, files: string[], models: ModelInfo[]): Promise<ModelInfo[]> {
+  if (!(await slicer.info()).backend.infoBoundsIncludeOrigin || models.length !== files.length) return models;
+  return Promise.all(
+    models.map(async (model, index) => {
+      if (model.min[0] !== 0 && model.min[1] !== 0) return model;
+      const dir = await mkdtemp(join(tmpdir(), "prusaslicer-mcp-bounds-"));
+      try {
+        await slicer.run(["--export-stl", "--dont-arrange", "--output", dir, files[index]!], { timeoutMs: slicer.sliceTimeoutMs });
+        const boxes = (await Promise.all((await readdir(dir)).filter((name) => name.toLowerCase().endsWith(".stl")).map((name) => stlBounds(join(dir, name))))).filter(
+          (box) => box !== null,
+        );
+        if (boxes.length === 0) return { ...model, other: { ...model.other, bounds_note: "x/y as --info reports them; it includes the origin in 3.0.0-alpha14" } };
+        const r = (value: number) => Math.round(value * 1000) / 1000;
+        const min = [Math.min(...boxes.map((box) => box.min[0])), Math.min(...boxes.map((box) => box.min[1]))];
+        const max = [Math.max(...boxes.map((box) => box.max[0])), Math.max(...boxes.map((box) => box.max[1]))];
+        return {
+          ...model,
+          min: [r(min[0]!), r(min[1]!), model.min[2]],
+          max: [r(max[0]!), r(max[1]!), model.max[2]],
+          size: [r(max[0]! - min[0]!), r(max[1]! - min[1]!), model.size[2]],
+          other: { ...model.other, bounds_note: "x/y measured on the mesh: --info includes the origin in PrusaSlicer 3.0" },
+        };
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }),
   );
 }
 

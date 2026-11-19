@@ -37,7 +37,7 @@ export function registerStatus(server: McpServer, { slicer, account }: ToolDeps)
           version: info.help.version,
           binary: info.binary.path,
           located_by: info.binary.source,
-          backend: `${info.backend.major}.x${info.backend.experimental ? " (experimental: checked against 3.0.0-alpha14 only. Settings go through a --load config, as 3.0 ignores them as options. Known alpha14 quirks: ASCII G-code only, empty preset ids and retract_lift 0 in the G-code header, no selected presets in its app config)" : ""}`,
+          backend: `${info.backend.major}.x${info.backend.experimental ? " (experimental: checked against 3.0.0-alpha14 only. Settings go through a --load config, as 3.0 ignores them as options. Known alpha14 quirks: ASCII G-code only; the G-code header shows empty preset ids and lift settings as 0 though the G-code lifts; --info includes the origin in bounding boxes (corrected here); no selected presets in its app config)" : ""}`,
           datadir: info.datadir,
         },
         selected_presets: state.presets,

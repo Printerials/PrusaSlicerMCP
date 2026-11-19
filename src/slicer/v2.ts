@@ -14,6 +14,8 @@ export const v2Backend: Backend = {
   queryToFile: false,
   patchConfig: null,
   keepsGuiSelection: true,
+  infoBoundsIncludeOrigin: false,
+  exportArranges: false,
 
   defaultDatadir() {
     const dir =

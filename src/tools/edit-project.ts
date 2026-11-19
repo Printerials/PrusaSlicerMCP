@@ -51,6 +51,12 @@ export function registerEditProject(server: McpServer, { slicer }: ToolDeps): vo
     async (args) => {
       if (!args.filament && !args.print && !args.settings) throw new Refusal("Give a filament, a print preset or settings to change.");
       const file = await requireFile(args.path, [".3mf"]);
+      // The check below reads what PrusaSlicer saves as INI; 3.0 saves JSON and takes settings differently.
+      if ((await slicer.info()).backend.major >= 3) {
+        throw new Refusal(
+          "edit_project works with PrusaSlicer 2.x only, so far. This server runs PrusaSlicer 3.x; slice with presets and overrides instead, or run the server with 2.9 (PRUSASLICER_PATH).",
+        );
+      }
       const project = await readProject(file);
       if (project.kind !== "prusaslicer-2" || project.config.size === 0) {
         throw new Refusal(

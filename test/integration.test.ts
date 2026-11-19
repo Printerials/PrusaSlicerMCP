@@ -50,7 +50,8 @@ describe("against the installed PrusaSlicer", { skip }, () => {
     await copyFile(join(root, "test", "fixtures", "cube.stl"), join(dir, "cube.stl"));
     client = new Client({ name: "integration-test", version: "0" });
     await client.connect(
-      new StdioClientTransport({ command: process.execPath, args: [join(root, "src", "index.ts")], stderr: "ignore", cwd: root }),
+      // The whole environment, so PRUSASLICER_PATH reaches the server: by default the transport passes only a few variables.
+      new StdioClientTransport({ command: process.execPath, args: [join(root, "src", "index.ts")], stderr: "ignore", cwd: root, env: process.env as Record<string, string> }),
     );
   });
 
@@ -216,6 +217,7 @@ describe("against the installed PrusaSlicer", { skip }, () => {
   test("find and install a profile, on a copy of the datadir", async (t) => {
     const status = await call("slicer_status");
     const datadir: string | null = status.data.slicer.datadir;
+    if (/^3\./.test(status.data.slicer.version)) return t.skip("profile management is 2.x only; 3.0 refuses it");
     if (!datadir || !printer) return t.skip("no datadir or no printer selected");
 
     // A second server on a copy: the real datadir and the GUI are not touched.

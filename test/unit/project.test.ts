@@ -89,7 +89,8 @@ test("PrusaSlicer 3.0 project: JSON config containers", async () => {
       config_containers: [
         {
           beds: [],
-          preset: { printer: "Prusa CORE One HF0.4 nozzle" },
+          // As 3.0.0-alpha14 writes it: the printer profile under hw_config (preset.printer is the model).
+          preset: { hw_config: { config_name: "Prusa CORE One HF0.4 nozzle" }, printer: { name: "Prusa CORE One" } },
           configuration: {
             printer: { printer_model: "COREONE", nozzle_diameter: [0.4] },
             print: { layer_height: 0.2, support_material: false },

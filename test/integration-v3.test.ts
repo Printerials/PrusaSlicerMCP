@@ -79,7 +79,7 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
     assert.equal(setting.data.location, "print_settings");
   });
 
-  test("overrides reach the G-code, and are confirmed from its config block", async (t) => {
+  test("overrides reach the G-code, and are confirmed from what PrusaSlicer loaded", async (t) => {
     if (!filament) return t.skip("no profiles");
     const plain = join(dir, "plain.gcode");
     const changed = join(dir, "changed.gcode");
@@ -104,6 +104,17 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
     assert.equal(sliced.isError, false, sliced.text);
     assert.equal(await header(output, "fill_density"), "33%");
     assert.equal(await header(output, "fill_pattern"), "gyroid");
+  });
+
+  test("a lift override is confirmed, although the alpha14 header shows lift settings as 0", async (t) => {
+    if (!filament) return t.skip("no profiles");
+    const output = join(dir, "lift.gcode");
+    const sliced = await call("slice", {
+      inputs: [join(dir, "cube.stl")], printer, print, filament, gcode_format: "ascii", output,
+      overrides: { retract_lift_above: 5, travel_max_lift: 1 },
+    });
+    assert.equal(sliced.isError, false, sliced.text);
+    assert.deepEqual([...sliced.data.overrides_confirmed].sort(), ["retract_lift_above", "travel_max_lift"]);
   });
 
   test("bad input is refused before anything is sliced", async (t) => {

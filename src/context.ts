@@ -305,6 +305,7 @@ export class SlicerContext {
 
   async installedProfiles(): Promise<{ path: string; text: string; installed: Installed }> {
     const info = await this.info();
+    if (info.backend.major >= 3) throw new Refusal("Managing installed profiles is supported for PrusaSlicer 2.x only, so far.");
     if (!info.datadir) throw new Refusal("PrusaSlicer's data directory was not found. Start PrusaSlicer once to create it.");
     const path = join(info.datadir, "PrusaSlicer.ini");
     if (!existsSync(path)) throw new Refusal(`${path} does not exist. Start PrusaSlicer once and finish the Configuration Wizard.`);

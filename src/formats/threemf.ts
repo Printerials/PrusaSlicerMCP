@@ -1,5 +1,5 @@
 import { parseCommentedConfig, splitList, type FlatConfig } from "./ini.ts";
-import { flattenConfiguration } from "../slicer/v3.ts";
+import { flattenConfiguration, presetNames } from "../slicer/v3.ts";
 import { ZipReader } from "./zip.ts";
 
 /**
@@ -117,19 +117,19 @@ export async function readProject(path: string): Promise<ProjectRead> {
 function readV3Project(text: string, result: ProjectRead): void {
   const data = JSON.parse(text) as {
     objects?: unknown;
-    config_containers?: Array<{ preset?: Record<string, unknown>; configuration?: Record<string, unknown> }>;
+    config_containers?: Array<{ preset?: unknown; configuration?: Record<string, unknown> }>;
   };
   const container = data.config_containers?.[0];
   if (container?.configuration) result.config = flattenConfiguration(container.configuration);
-  const preset = container?.preset ?? {};
-  const pick = (...keys: string[]) => {
-    for (const key of keys) if (typeof preset[key] === "string") return preset[key] as string;
-    return null;
-  };
+  const names = presetNames(container?.preset);
   result.presets = {
-    printer: pick("printer", "printer_preset", "printer_name") ?? result.config.get("printer_settings_id") ?? null,
-    print: pick("print", "print_preset", "print_name") ?? result.config.get("print_settings_id") ?? null,
-    filament: result.config.has("filament_settings_id") ? splitList(result.config.get("filament_settings_id")!) : [],
+    printer: names.printer ?? result.config.get("printer_settings_id") ?? null,
+    print: names.print ?? result.config.get("print_settings_id") ?? null,
+    filament: names.filaments.length
+      ? names.filaments
+      : result.config.has("filament_settings_id")
+        ? splitList(result.config.get("filament_settings_id")!)
+        : [],
   };
   if (Array.isArray(data.objects)) {
     result.objects = data.objects.map((raw, index) => {

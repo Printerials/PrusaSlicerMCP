@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { z } from "zod";
 import { readGcode } from "../formats/gcode.ts";
@@ -8,7 +9,7 @@ import { splitList } from "../formats/ini.ts";
 import { spoolLabel, spoolPricePerKg } from "../spoolman/client.ts";
 import { spoolman } from "./filament.ts";
 import { describeFailure } from "../slicer/run.ts";
-import { checkOverrides as compareOverrides } from "../slicer/verify.ts";
+import { checkApplied } from "../slicer/verify.ts";
 import { Refusal } from "../util/errors.ts";
 import { commitFile, exists, expandHome, outputTarget, requireFile, stem, withStaging } from "../util/paths.ts";
 import { checkOverrides, overrideArgs, overridesSchema, transformArgs, transformsSchema } from "./args.ts";
@@ -125,7 +126,30 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
       if (!args.allow_post_process) fixed.set("post_process", "");
       if (format !== "auto") fixed.set("binary_gcode", format === "binary" ? "1" : "0");
       if (projectStem) fixed.set("output_filename_format", "project.gcode");
-      const patchedConfig = patchConfig && baseConfig ? patchConfig(baseConfig, new Map([...requestedOverrides, ...fixed]), catalog) : null;
+      const changes = new Map([...requestedOverrides, ...fixed]);
+      const patchedConfig = patchConfig && baseConfig ? patchConfig(baseConfig, changes, catalog) : null;
+
+      // 3.0 ignores what it does not take, without an error. Before slicing, PrusaSlicer loads the
+      // written config and saves it back; every changed value must come back as written.
+      let applied: ReturnType<typeof checkApplied> | undefined;
+      if (patchedConfig) {
+        const dir = await mkdtemp(join(tmpdir(), "prusaslicer-mcp-"));
+        try {
+          const written = join(dir, "written.json");
+          await writeFile(written, patchedConfig);
+          const loaded = info.backend.parseSavedConfig(await slicer.savedConfigText(["--load", written]));
+          applied = checkApplied(changes.keys(), info.backend.parseSavedConfig(patchedConfig), loaded);
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+        if (applied.rejected.length) {
+          throw new Refusal("PrusaSlicer did not accept these values, so nothing was sliced.", {
+            rejected: Object.fromEntries(
+              applied.rejected.map((entry) => [entry.key, { given: entry.expected, prusaslicer_used: entry.found, allowed: catalog.get(entry.key)?.values }]),
+            ),
+          });
+        }
+      }
 
       const result = await withStaging(destDir, async (staging) => {
         const configPath = join(staging, "slice-config.json");
@@ -160,9 +184,7 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         return { final, run };
       });
 
-      const { report, config: gcodeConfig } = await readGcode(result.final);
-      // 3.0 ignores settings it does not take, without an error or a changed exit code. Every
-      // override is read back from the G-code's own config block.
+      const { report } = await readGcode(result.final);
       // 3.0.0-alpha14's CLI writes ASCII G-code whatever binary_gcode, --binary-gcode or the file
       // name say. A file that is not what was asked for is removed, not handed over under a wrong name.
       if (format === "binary" && report.format !== "binary") {
@@ -170,16 +192,6 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         throw new Refusal(
           `Binary G-code was asked for, but ${info.help.version} wrote ${report.format} G-code. Use gcode_format "ascii" (or "auto"). The file was removed.`,
         );
-      }
-      let overrideCheck: ReturnType<typeof compareOverrides> | undefined;
-      if (baseConfig && requestedOverrides.size) {
-        overrideCheck = compareOverrides(requestedOverrides, info.backend.parseSavedConfig(baseConfig), gcodeConfig);
-        if (overrideCheck.ignored.length) {
-          await unlink(result.final).catch(() => undefined);
-          throw new Refusal(
-            `PrusaSlicer did not apply ${overrideCheck.ignored.map((entry) => `${entry.key} (asked ${entry.requested}, G-code has ${entry.found})`).join("; ")}. The G-code was removed.`,
-          );
-        }
       }
       // PrusaSlicer 2.9 silently slices with the GUI's selection when a preset cannot be used.
       if (requested) {
@@ -197,10 +209,8 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         .map((line) => line.trim())
         .filter((line) => line && !NOISE.test(line))
         .slice(0, 30);
-      if (overrideCheck?.unverified.length) {
-        messages.push(
-          `Not confirmed in the G-code config: ${overrideCheck.unverified.map((entry) => `${entry.key} (asked ${entry.requested}, G-code has ${entry.found ?? "no such key"})`).join("; ")}.`,
-        );
+      if (applied?.missing.length) {
+        messages.push(`Not found in the config PrusaSlicer loaded, so not confirmed: ${applied.missing.join(", ")}.`);
       }
       let spool: Record<string, unknown> | undefined;
       if (args.spool_id !== undefined) {
@@ -229,7 +239,7 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         output: result.final,
         presets,
         overrides: overrides.keys.length ? overrides.keys : undefined,
-        overrides_confirmed: overrideCheck ? overrideCheck.confirmed : undefined,
+        overrides_confirmed: applied ? applied.confirmed.filter((key) => requestedOverrides.has(key)) : undefined,
         transforms: args.transforms,
         post_process: args.allow_post_process ? "allowed" : "disabled",
         messages: messages.length ? messages : undefined,
