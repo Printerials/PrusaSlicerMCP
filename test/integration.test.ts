@@ -86,6 +86,7 @@ describe("against the installed PrusaSlicer", { skip }, () => {
       "screenshot_prusaslicer",
       "slice",
       "slicer_status",
+      "update_profiles",
     ]);
     for (const tool of tools) assert.equal(typeof tool.annotations?.readOnlyHint, "boolean", tool.name);
   });
@@ -247,6 +248,20 @@ describe("against the installed PrusaSlicer", { skip }, () => {
     assert.equal(escaped.isError, false, escaped.text);
     assert.equal(await readFile(join(dir, "victim.txt"), "utf8"), "my notes\n", "the project's output_filename_format wrote outside the output directory");
     assert.match(escaped.data.output, /\/downloads\/escape\.b?gcode$/);
+  });
+
+  test("update_profiles on 2.x: the installed bundles against PrusaSlicer's own index, and no install", async (t) => {
+    const status = await call("slicer_status");
+    if (/^3\./.test(status.data.slicer.version)) return t.skip("2.x only; 3.x is tested on a copy of its data directory");
+    const check = await call("update_profiles", {});
+    assert.equal(check.isError, false, check.text);
+    const prusa = check.data.bundles.find((bundle: { id: string }) => bundle.id === "PrusaResearch");
+    if (!prusa) return t.skip("no PrusaResearch bundle installed");
+    assert.match(prusa.installed, /^\d+\.\d+\.\d+/);
+    if (prusa.newest_known) assert.equal(typeof prusa.update_available, "boolean");
+    const install = await call("update_profiles", { install: true });
+    assert.equal(install.isError, true);
+    assert.match(install.text, /only in its GUI/);
   });
 
   test("find and install a profile, on a copy of the datadir", async (t) => {

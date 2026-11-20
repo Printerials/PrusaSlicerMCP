@@ -56,6 +56,22 @@ export function isGuiRunning(): Promise<boolean | null> {
   });
 }
 
+/**
+ * Whether the GUI of this PrusaSlicer binary runs. On macOS a GUI's command line is its binary's
+ * path alone (seen for 3.0.0-alpha14 next to 2.9.7), which tells two installed versions apart;
+ * a CLI run has arguments. Elsewhere any PrusaSlicer GUI counts. Null when it cannot be told.
+ */
+export function isGuiOfBinaryRunning(binary: string): Promise<boolean | null> {
+  if (process.platform !== "darwin") return isGuiRunning();
+  const pattern = `^${binary.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}$`;
+  return new Promise((resolve) => {
+    execFile("pgrep", ["-f", pattern], { timeout: 5000 }, (error, stdout) => {
+      if (error && (error as NodeJS.ErrnoException & { code?: number }).code !== 1) return resolve(null);
+      resolve(stdout.split(/\s+/).filter(Boolean).map(Number).some((pid) => pid !== process.pid && !activePids.has(pid)));
+    });
+  });
+}
+
 export function captureWindow(outputPath: string, maxEdge: number): Promise<CaptureResult> {
   if (process.platform === "darwin") return darwin.capture(outputPath, maxEdge);
   if (process.platform === "win32") return win32.capture(outputPath, maxEdge);

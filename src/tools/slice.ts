@@ -12,8 +12,10 @@ import { describeFailure } from "../slicer/run.ts";
 import type { AppliedCheck } from "../slicer/verify.ts";
 import { Refusal } from "../util/errors.ts";
 import { commitFile, exists, expandHome, outputTarget, requireFile, stem, withStaging } from "../util/paths.ts";
-import { checkOverrides, filamentShadows, overrideArgs, overridesSchema, transformArgs, transformsSchema } from "./args.ts";
+import { checkOverrides, filamentShadows, MERGE_CRASH, overrideArgs, overridesSchema, transformArgs, transformsSchema } from "./args.ts";
 import { json, progressReporter, tool, WRITES_NEW_FILES, type ToolDeps } from "./common.ts";
+import { addThumbnails } from "./thumbnails.ts";
+import { FORCED_UPDATE_BLOCK } from "./update.ts";
 
 export const MODEL_EXTENSIONS = [".stl", ".3mf", ".obj", ".step", ".stp", ".amf"];
 
@@ -75,11 +77,25 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
               "loose extrusions, low bed adhesion). Which issue it was, only the GUI shows. Objects that get supports are not checked. " +
               "Slices with trace logging, which adds thousands of lines to PrusaSlicer's log.txt.",
           ),
+        thumbnails: z
+          .boolean()
+          .default(true)
+          .describe(
+            "Preview images for the printer's display, in the sizes and formats (PNG, QOI) the printer preset asks for. PrusaSlicer's command line " +
+              "draws none, so this server draws them from the model, seen as PrusaSlicer shows it. A 3MF with its own thumbnail gets PrusaSlicer's.",
+          ),
       }),
       annotations: WRITES_NEW_FILES,
     },
     async (args, ctx) => {
       const inputs = await Promise.all(args.inputs.map((input) => requireFile(input, MODEL_EXTENSIONS)));
+      // Measured with 2.9.7 and 3.0.0-alpha14: without --merge every input becomes its own G-code.
+      if (inputs.length > 1 && !args.transforms?.merge) {
+        throw new Refusal(
+          "PrusaSlicer slices each input file to a G-code of its own unless they are merged, and slice returns one G-code. " +
+            "Slice the files one call each, or set transforms.merge to put them on one plate (PrusaSlicer 3.x; 2.9.7's command line crashes on --merge).",
+        );
+      }
 
       // Which config: explicit presets, a PrusaSlicer project's own, or the GUI selection.
       const explicit = Boolean(args.printer || args.print || args.filament);
@@ -231,12 +247,27 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
           ),
         );
         const produced = (await readdir(staging)).filter((name) => /\.b?gcode$/i.test(name));
-        if (produced.length === 0) throw new Refusal(describeFailure(run, "Slicing"));
+        if (produced.length === 0 && FORCED_UPDATE_BLOCK.test(run.stderr)) {
+          throw new Refusal(
+            "PrusaSlicer will not slice until its forced profile updates are installed (\"Pending forced preset reconfigurations\"). " +
+              "update_profiles lists them and installs them with install: true, after the user agrees.",
+          );
+        }
+        if (produced.length === 0) throw new Refusal(describeFailure(run, "Slicing", args.transforms?.merge ? MERGE_CRASH : undefined));
+        if (produced.length > 1) throw new Refusal(`PrusaSlicer wrote ${produced.length} G-code files (${produced.join(", ")}) where one was expected; none was kept.`);
         const staged = join(staging, produced[0]!);
+        let thumbnails: string | undefined;
+        if (args.thumbnails) {
+          try {
+            thumbnails = await addThumbnails(slicer, staged, inputs, args.transforms, ctx.mcpReq.signal);
+          } catch (error) {
+            thumbnails = `none: ${error instanceof Error ? error.message.split("\n")[0] : String(error)} (the G-code is as sliced)`;
+          }
+        }
         const name = projectStem ? `${projectStem}${extname(produced[0]!)}` : produced[0]!;
         const final = fileName ? join(destDir, fileName) : args.overwrite ? join(destDir, name) : await freeName(destDir, name);
         await commitFile(staged, final, args.overwrite);
-        return { final, run };
+        return { final, run, thumbnails };
       });
 
       const { report } = await readGcode(result.final);
@@ -306,6 +337,7 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         messages: messages.length ? messages : undefined,
         spool,
         stability: args.stability_check ? stabilityOf(result.run.stdout + result.run.stderr) : undefined,
+        thumbnails: result.thumbnails,
         result: report,
       });
     },

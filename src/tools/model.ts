@@ -10,7 +10,7 @@ import { readProject } from "../formats/threemf.ts";
 import { describeFailure } from "../slicer/run.ts";
 import { Refusal } from "../util/errors.ts";
 import { commitFile, outputTarget, requireFile, stem, withStaging } from "../util/paths.ts";
-import { transformArgs, transformsSchema } from "./args.ts";
+import { MERGE_CRASH, transformArgs, transformsSchema } from "./args.ts";
 import { json, READ_ONLY, tool, WRITES_NEW_FILES, type ToolDeps } from "./common.ts";
 import { freeName, MODEL_EXTENSIONS } from "./slice.ts";
 
@@ -165,7 +165,7 @@ export function registerModel(server: McpServer, { slicer }: ToolDeps): void {
           ),
         );
         const produced = (await readdir(staging)).sort();
-        if (produced.length === 0) throw new Refusal(describeFailure(run, "Exporting"));
+        if (produced.length === 0) throw new Refusal(describeFailure(run, "Exporting", transforms?.merge ? MERGE_CRASH : undefined));
         const finals: string[] = [];
         for (const [index, name] of produced.entries()) {
           const final =

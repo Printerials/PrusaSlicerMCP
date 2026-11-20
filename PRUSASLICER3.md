@@ -57,7 +57,8 @@ Paths in source references are relative to `src/` of that checkout. Where the se
   - Do not judge a slice by these lines.
   - (measured)
 - **`; prusaslicer_json_config = begin … end`** holds the full JSON config with preset names and ids, and `; objects_info = {"objects":[{name, polygon}]}` follows it. Objects are also labelled with M486 / `EXCLUDE_OBJECT`. (measured; source `GCode.cpp:1491-1508`)
-- **Thumbnails** only when the single input is a 3MF that contains `Metadata/thumbnail.png`; STL input gives none. (STL: measured; 3MF: source `CLIRuntime.cpp:38-43`)
+- **Thumbnails** only when the single input is a 3MF that contains `Metadata/thumbnail.png`. That PNG is scaled to fill each size the printer asks for and cut to it (`resize_and_crop`), then written as the preset says (QOI, PNG); STL input gives none. Same as 2.9.7. (measured, also with `--load`; source `CLIRuntime.cpp:38-43`, `3mf.cpp:883-918`)
+- **Several input files give several G-code files,** one per input, unless `--merge` is given; `--merge` puts them on one plate (two cubes: 7.17 g against 3.61 g for one). 2.9.7 does the same without `--merge`, and crashes with it. (measured)
 - **Same print as 2.9.7.** A 3DBenchy on a CORE One with 0.15mm BALANCED and Prusament PLA: 11.12 g and 52m35s with 2.9.7, 11.13 g and 52m41s with alpha14, with 2649 and 2687 lifted moves. (measured; `test/integration-benchy.test.ts`)
 - **Multi-bed projects:** the CLI slices only the selected bed. (source `ProcessActions.cpp:293-303`)
 
@@ -99,7 +100,12 @@ Paths in source references are relative to `src/` of that checkout. Where the se
 - **When a new file is seen:** the CLI sees it on the next call. The GUI only at start: there is no file watcher. A preset written by the server showed in the GUI's filament list after a restart. (measured; source `DesktopApp.cpp:546-550`)
 - **No "installed" profiles.** Every vendor profile is available. `printer_favorite_presets` (printer model ids) and `material_favorite_presets` (evaluated material ids) only filter the GUI's lists. (source `BundleLoader.cpp:90-108`, `MaterialSelectionDialog.cpp:30-36`)
 - **`PrusaSlicer.json` is rewritten by the GUI when its window closes.** Edit it only while PrusaSlicer is closed. If one of `printer_favorite_presets`, `material_favorite_presets` or `recent_projects` is missing, the whole file is reset to defaults. (source `MainFrame.cpp:968-981`, `AppSettingsAdvanced.cpp:83-91`)
-- **Vendor bundles** are updated with `--preset-update-sources`, `--preset-update-select-source UUID`, `--preset-update-list`, `--preset-update` and `--preset-update-add-local ZIP`, which write JSON to stdout. (source `ReadCLI.cpp:485-553`; `--preset-update-sources` measured)
+- **Vendor bundles** are updated with `--preset-update-sources`, `--preset-update-select-source UUID`, `--preset-update-list`, `--preset-update` and `--preset-update-add-local ZIP`, which write JSON to stdout. (source `ReadCLI.cpp:485-553`)
+  - `--preset-update-sources` lists one source by default, Prusa FFF (`https://preset-repo-api.prusa3d.com/v2/repos/prusa-research-fff/`), selected. (measured)
+  - `--preset-update-list` downloads the indices into `update_sync/` and prints `{"result": {regular_updates, forced_updates, forced_downgrades, not_in_index, new_vendors, removals}}`, each entry with `vendor_id`, `vendor_repo_id`, `current_version`, `recommended_version`, `state` and `comment`; `warnings` when there are any, `{"error": …}` on failure. A bundle set back to 1.0.24 in `presets/local/prusa-research-fff/PrusaResearch/vendor.yaml` was listed as a regular update to 1.0.25. (measured on a copy of the data directory)
+  - `--preset-update` installs everything listed and prints nothing unless there are warnings; that bundle was 1.0.25 again, user presets untouched, no snapshot taken. (measured on a copy)
+  - At `--loglevel 1` the error lines of the start (no physical printers, no bed model) come on stdout before the JSON; `SLIC3R_LOGLEVEL=0` keeps it clean. (measured)
+  - **Pending forced updates block slicing:** "Execution blocked: Pending forced preset reconfigurations or updater error", exit 1. Regular updates do not. (source `ProcessActions.cpp:866-912`; regular: measured)
 - **The GUI's selected presets are not in the app config.** `PrusaSlicer.json` has favourites, `last_used_physical_printer` and `recent_projects` only, so a slice needs printer, print and filament given. (measured)
 
 ## The running GUI
@@ -119,11 +125,12 @@ Paths in source references are relative to `src/` of that checkout. Where the se
 
 ## What the server does with it
 
-- `slice`: settings through one patched `--load` config, written into every section that holds the key and read back per section before slicing; the format by the extension of `output_filename_format`; `stability_check` from the trace log. (`src/slicer/v3-config.ts`, `src/tools/slice.ts`)
+- `slice`: settings through one patched `--load` config, written into every section that holds the key and read back per section before slicing; the format by the extension of `output_filename_format`; `stability_check` from the trace log; thumbnails drawn by the server and written into the G-code after slicing, as for 2.9. (`src/slicer/v3-config.ts`, `src/tools/slice.ts`, `src/tools/thumbnails.ts`)
 - `edit_project`: rewrites only the project JSON, checks by loading the result with the CLI, reports per-object overrides. (`src/tools/edit-project-v3.ts`) Measured: PrusaSlicer loads the written values back, the edited project slices with them (a lift of 0.4 mm on 263 of 264 lifted moves), and every other zip entry is byte-identical.
 - `create_filament_preset`: YAML in `presets/user`, checked and rolled back. (`src/slicer/filament-preset-v3.ts`) Measured on a copy of the data directory: listed at once, sliced with (the G-code has its temperature), overwritten with the same ids.
 - `model_info` and `export_model`: X/Y from the mesh where `--info` includes the origin; `--dont-arrange` on export.
 - `find_profiles` lists what fits; `install_profiles` changes nothing.
+- `update_profiles`: `--preset-update-list`, and with `install` `--preset-update` (refused while this version's GUI runs on the same data directory), checked by listing again. `slice` names it when forced updates block slicing. (`src/tools/update.ts`)
 
 ## Not known yet
 

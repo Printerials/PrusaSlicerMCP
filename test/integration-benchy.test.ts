@@ -15,10 +15,19 @@ import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { readBgcodeMetadata } from "../src/formats/bgcode.ts";
+import { analyzeAsciiGcode } from "../src/formats/gcode-ascii.ts";
+import { checkBgcode } from "../src/formats/gcode-thumbnails.ts";
+import { encodePng, encodeQoi } from "../src/formats/image.ts";
+import { ZipReader } from "../src/formats/zip.ts";
 import { locateSlicer } from "../src/slicer/locate.ts";
+import { decodePng, decodeQoi } from "./helpers/images.ts";
 import { benchy, liftedMoves, lifts, movedStl } from "./helpers/models.ts";
+import { writeZip } from "./helpers/zip.ts";
 
 const root = join(import.meta.dirname, "..");
+const CORE_ONE_THUMBNAILS = ["16x16/QOI", "313x173/QOI", "480x240/QOI", "380x285/PNG"];
+type Thumb = { width: number; height: number; format: string };
 
 interface Target {
   path: string;
@@ -134,6 +143,73 @@ for (const target of targets) {
       const lifts = liftedMoves(gcode);
       assert.ok(lifts > 1000, `only ${lifts} lifted moves`);
       sliced.set(target.version, { grams: report.filament.total_g, seconds: report.time.normal_seconds, lifts });
+      // The CORE One asks for 16x16/QOI, 313x173/QOI, 480x240/QOI, 380x285/PNG; the CLI draws none.
+      assert.deepEqual(report.thumbnails.map((t: Thumb) => `${t.width}x${t.height}/${t.format.toUpperCase()}`), CORE_ONE_THUMBNAILS);
+      assert.match(result.data.thumbnails, /drawn by this server/);
+    });
+
+    test("thumbnails: binary G-code, the image itself, and a 3MF's own thumbnail through PrusaSlicer", async (t) => {
+      if (!presets) return t.skip("no presets");
+      const binary = join(dir, "benchy.bgcode");
+      const sliced = await call("slice", { inputs: [input], ...presets, gcode_format: "binary", output: binary });
+      assert.equal(sliced.isError, false, sliced.text);
+      assert.deepEqual(sliced.data.result.thumbnails.map((t: Thumb) => `${t.width}x${t.height}/${t.format.toUpperCase()}`), CORE_ONE_THUMBNAILS);
+      assert.equal(await checkBgcode(binary), null);
+      const meta = await readBgcodeMetadata(binary);
+      const png = decodePng(meta.thumbnails.find((thumb) => thumb.format === "png")!.data);
+      assert.deepEqual([png.width, png.height], [380, 285]);
+      const opaque = png.pixels.filter((_, i) => i % 4 === 3 && png.pixels[i] === 255).length;
+      assert.ok(opaque > 0.15 * 380 * 285 && opaque < 0.85 * 380 * 285, `${opaque} opaque pixels: the boat should fill part of the image`);
+      assert.equal(png.pixels[3], 0, "the background is transparent");
+
+      // A 3MF that holds Metadata/thumbnail.png: PrusaSlicer embeds that one itself, as QOI and PNG.
+      const geometry = join(dir, "benchy-geometry.3mf");
+      // 2.9 keeps a 3MF's positions when slicing (no arranging), and this mesh lies around the origin.
+      const exported = await call("export_model", { inputs: [input], format: "3mf", output: geometry, transforms: { center: [125, 110] } });
+      assert.equal(exported.isError, false, exported.text);
+      const zip = await ZipReader.open(geometry);
+      const files: Record<string, Buffer> = {};
+      try {
+        for (const name of zip.entries.keys()) files[name] = (await zip.read(name))!;
+      } finally {
+        await zip.close();
+      }
+      files["Metadata/thumbnail.png"] = encodePng(png);
+      const withThumbnail = join(dir, "benchy-thumbnail.3mf");
+      await writeZip(withThumbnail, files);
+      const fromProject = await call("slice", { inputs: [withThumbnail], ...presets, gcode_format: "ascii", output: join(dir, "benchy-3mf.gcode") });
+      assert.equal(fromProject.isError, false, fromProject.text);
+      assert.match(fromProject.data.thumbnails, /embedded by PrusaSlicer/);
+      const own = await analyzeAsciiGcode(join(dir, "benchy-3mf.gcode"));
+      assert.deepEqual(own.thumbnails.map((thumb) => `${thumb.width}x${thumb.height}/${thumb.format.toUpperCase()}`), CORE_ONE_THUMBNAILS);
+      // PrusaSlicer's QOI of these sizes, decoded and encoded again here, gives the same bytes.
+      for (const thumb of own.thumbnails.filter((thumb) => thumb.format === "qoi")) {
+        assert.deepEqual(encodeQoi(decodeQoi(thumb.data)), thumb.data, `QOI ${thumb.width}x${thumb.height}`);
+      }
+    });
+
+    test("several inputs: refused without merge; merged on 3.x, a clear crash report on 2.9", async (t) => {
+      if (!presets) return t.skip("no presets");
+      const a = join(dir, "a.stl");
+      const b = join(dir, "b.stl");
+      await copyFile(join(root, "test", "fixtures", "cube.stl"), a);
+      await copyFile(join(root, "test", "fixtures", "cube.stl"), b);
+      const unmerged = await call("slice", { inputs: [a, b], ...presets, output: join(dir, "two.gcode") });
+      assert.equal(unmerged.isError, true);
+      assert.match(unmerged.text, /one call each/);
+      const merged = await call("slice", { inputs: [a, b], ...presets, gcode_format: "ascii", output: join(dir, "merged.gcode"), transforms: { merge: true } });
+      if (target.version.startsWith("2.")) {
+        // 2.9.7 exits on SIGSEGV with --merge, even with one file (measured 2026-11-20).
+        assert.equal(merged.isError, true);
+        assert.match(merged.text, /crashes on --merge/);
+        return;
+      }
+      assert.equal(merged.isError, false, merged.text);
+      assert.match(merged.data.thumbnails, /drawn by this server/);
+      const single = await call("slice", { inputs: [a], ...presets, gcode_format: "ascii", output: join(dir, "single.gcode") });
+      assert.equal(single.isError, false, single.text);
+      const ratio = merged.data.result.filament.total_g / single.data.result.filament.total_g;
+      assert.ok(ratio > 1.8 && ratio < 2.2, `two cubes use ${ratio.toFixed(2)} times one cube's filament`);
     });
 
     test("lift settings reach the G-code past the filament's own overrides", async (t) => {
@@ -183,6 +259,8 @@ for (const target of targets) {
       const before = (await readFile(join(dir, "benchy.gcode"), "utf8")).split("\n").length;
       const afterPause = (await readFile(join(dir, "benchy-pause.gcode"), "utf8")).split("\n").length;
       assert.ok(afterPause > before, "nothing was inserted");
+      const paused = await analyzeAsciiGcode(join(dir, "benchy-pause.gcode"));
+      assert.equal(paused.thumbnails.length, CORE_ONE_THUMBNAILS.length, "the thumbnails survive the pause");
     });
   });
 }

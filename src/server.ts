@@ -11,13 +11,14 @@ import { registerPrinterialsAccount } from "./tools/printerials-account.ts";
 import { registerProfiles } from "./tools/profiles.ts";
 import { registerSlice } from "./tools/slice.ts";
 import { registerStatus } from "./tools/status.ts";
+import { registerUpdate } from "./tools/update.ts";
 import { VERSION } from "./version.ts";
 
 const INSTRUCTIONS = `PrusaSlicer on this machine, with PrusaSlicer itself as the source of truth for profiles, slicing and geometry.
 - Start with slicer_status: version, selected presets, the project open in the GUI.
 - Preset names must be exact. list_printers and list_profiles give them; a wrong name is refused with suggestions.
 - get_config shows what a preset set resolves to and compares two sets; describe_setting explains a setting.
-- find_profiles searches official profiles that are not enabled yet; install_profiles enables or disables them (PrusaSlicer must be closed).
+- find_profiles searches official profiles that are not enabled yet; install_profiles enables or disables them (PrusaSlicer must be closed). update_profiles checks for newer official bundles and, on 3.x, installs them after the user agrees.
 - A filament without an official profile: create_filament_preset builds one on the right Prusa generic, from a Spoolman spool or stated values.
 - Spools: connect_printerials links the user's Printerials account (browser sign-in, no URL to paste); SPOOLMAN_URL (a Spoolman server) goes first when set. Then list_spools, slice with spool_id (enough left? cost), and record_spool_usage only after the user confirms a print was made.
 - Do not tell the user where to click in PrusaSlicer to change settings. edit_project changes a project (its filament, print preset and settings) and can open the result in PrusaSlicer; slice takes presets and overrides directly. The running GUI itself has no API.
@@ -32,6 +33,7 @@ export function createServer(slicer: SlicerContext, account: PrinterialsAccount)
   registerStatus(server, deps);
   registerProfiles(server, deps);
   registerInstall(server, deps);
+  registerUpdate(server, deps);
   registerFilament(server, deps);
   registerPrinterialsAccount(server, deps);
   registerSlice(server, deps);

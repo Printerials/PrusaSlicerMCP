@@ -66,13 +66,14 @@ Claude Desktop (`claude_desktop_config.json`):
 | `describe_setting` | Type, unit, allowed values, default and description of a setting, or a search over all of them |
 | `find_profiles` | Official filament and printer profiles in the installed bundles, also the ones not enabled yet; filament compatibility as PrusaSlicer evaluates it |
 | `install_profiles` | Enable or disable those profiles, as the Configuration Wizard does (PrusaSlicer must be closed; dry_run and a backup) |
+| `update_profiles` | Whether newer official profile bundles exist; on 3.x also installs them with PrusaSlicer's own updater |
 | `find_printerials_filament` | Search Printerials' filament catalogue; gives the variant id for `create_filament_preset` |
 | `create_filament_preset` | A PrusaSlicer profile for a filament without an official one, from a Spoolman spool, Printerials or stated values, built on the matching Prusa generic for the printer |
 | `connect_printerials` | Link your Printerials account with a browser sign-in (OAuth), for your spools without a pasted URL |
 | `disconnect_printerials` | Revoke that link at Printerials and remove it here |
 | `list_spools` | Spools on your Printerials shelf or in Spoolman: filament, grams left (weighed), price per kg, location |
 | `record_spool_usage` | Subtract what a print used from a spool, after the user confirmed the print was made |
-| `slice` | Slice to G-code with presets, a project's config or the GUI selection, plus overrides and transforms |
+| `slice` | Slice to G-code with presets, a project's config or the GUI selection, plus overrides and transforms, with thumbnails for the printer's display |
 | `model_info` | PrusaSlicer's mesh analysis: size, volume, facets, parts, manifold |
 | `project_info` | A 3MF's presets, settings it changes, per-object and per-range settings, colour changes, thumbnail |
 | `edit_project` | Switch a 3MF project's filament or print preset and change its settings; PrusaSlicer loads the result to check every value, and it can open it in the GUI |
@@ -111,6 +112,7 @@ These were verified against PrusaSlicer 2.9.7 on macOS, and the server is built 
   - A duplicate key makes it reject the whole file as corrupt.
   - The GUI keeps this in memory and writes it back on quitting. So `install_profiles` refuses while PrusaSlicer runs on the same data directory.
   - `find_profiles` lets PrusaSlicer judge compatibility, by querying a scratch copy of the data directory with everything enabled.
+- **Profile bundle updates are the GUI's job in 2.9.** At start, with "Check for configuration updates" on (`preset_update = 1`), it downloads each bundle's index into `cache/` and offers what is new; the CLI has no updater. `update_profiles` compares `config_version` of each bundle in `vendor/` with the newest version in that cached index that suits the running PrusaSlicer, and says when the index was downloaded. It does not install: that stays with the GUI.
 - **A user filament preset inherits nothing.** PrusaSlicer lays a preset file over its built-in defaults, not over its `inherits` parent (2.9.2 source, `PresetCollection::load_presets`). A file with only a temperature slices with bed 0 °C and type PLA.
   - `create_filament_preset` therefore writes the complete filament config (the 81 keys of `Preset::filament_options()`) of the printer-specific Prusa generic, with the stated values over it and `inherits` naming the generic.
   - A stated temperature range keeps the generic's tuned value when it lies inside, and the nearest bound otherwise.
@@ -132,7 +134,13 @@ These were verified against PrusaSlicer 2.9.7 on macOS, and the server is built 
 - **Invalid enum values are replaced silently.** `fill_pattern = lightnin` in a project loads as the default `stars`, with exit 0. `edit_project` therefore has PrusaSlicer load the edited project and compares every changed value with what it loaded.
 - **A filament profile's override wins over the print setting.** Buddy3D PETG @COREONE HF0.4 has `filament_travel_ramping_lift = 1`. With `--travel-ramping-lift=0 --retract-lift=0.4` alone, the G-code header shows both values, yet a 3DBenchy still slices with ramped lifts: 1 % of its lifts are 0.4 mm. With `--filament-travel-ramping-lift=0 --filament-retract-lift=0.4` as well, all of them are (2026-11-19). So when an override's `filament_<key>` is set (not `nil`) in the resolved config or the project, `slice` and `edit_project` set it too, and say so.
 - **Print stability warnings are not in the CLI output.** "Detected print stability issues: Long bridging extrusions" (and "Collapsing overhang", "Loose extrusions", "Low bed adhesion") is in the binary. 2.9.7 runs the check from the CLI but reports nothing, not even at `--loglevel 5`. 3.0.0-alpha14 leaves only its code in the trace log; see `stability_check` under PrusaSlicer 3.0.
-- **The CLI's 3MF export holds no print settings**, and the CLI embeds no thumbnails (it renders none).
+- **The CLI's 3MF export holds no print settings.**
+- **The CLI draws no thumbnails.** It embeds one only when the single input is a 3MF holding `Metadata/thumbnail.png`, scaled and cut to each size the printer asks for (2.9.7 and 3.0.0-alpha14). G-code sliced from an STL had no preview on the printer.
+  - So `slice` draws them itself (`src/render/thumbnail.ts`): the model seen as PrusaSlicer shows it (from the front left, 45 degrees from above, Z up), lit with the lights of PrusaSlicer's shader, in the filament's colour on a transparent background, at each size and format (PNG, QOI) the printer preset asks for.
+  - They go into the G-code where PrusaSlicer puts its own, after the slice: in ASCII after the first line, in binary G-code as thumbnail blocks after the printer metadata. The unit tests compare the blocks and the QOI encoding byte for byte with PrusaSlicer's, and the integration tests re-encode PrusaSlicer's own thumbnails to the same bytes. The result is read back (binary: every block checksum) before it replaces the sliced file; when anything fails, the G-code stays as sliced and `thumbnails` says why.
+  - The model is the STL itself, or PrusaSlicer's `--export-stl` with the same transforms. A 3MF with its own thumbnail gets PrusaSlicer's. `thumbnails: false` turns it off.
+  - Handing PrusaSlicer a 3MF with a PNG in it instead was measured and dropped: 2.9 does not arrange a 3MF when slicing (its positions count as meant), and its `--export-3mf` does not arrange either, so the model would have landed elsewhere on the bed.
+- **Several input files give several G-code files.** Without `--merge`, 2.9.7 and 3.0.0-alpha14 slice each input to a G-code of its own. `slice` returns one, so it refuses several inputs without `transforms.merge`. 2.9.7's `--merge` crashes (exit 139), also with one file and for `--export-stl`; 3.0 merges.
 
 ## PrusaSlicer 3.0
 
@@ -167,7 +175,8 @@ The 3.0 backend was checked against **3.0.0-alpha14 on macOS (2026-11-17 and 202
 - **What is open in the 3.0 GUI.** Its window title is always the build id and it keeps no selected presets, but it writes a full 3MF of each unsaved project to `backup_projects/<instance>_<id>_<name>.3mf` on every change, and removes it once saved (seen with the GUI). `slicer_status` reports the newest as the open project, and while the GUI runs its presets count as the selection, as 2.x's GUI selection does; the answer says where they came from. A project without unsaved changes has no backup.
 - **Nothing is written into PrusaSlicer's data directory** (any version): an output there, such as G-code next to a backup of an open project, is refused. A 3MF in `backup_projects` would be offered for recovery at PrusaSlicer's next start.
 - **Post-processing scripts do not run in 3.0.0-alpha14's CLI.** With a script in the config, the CLI asks `Continue(Y/N) ?` on stdin, and without a Y it stops with no output and exit 0, even for a `--save`. Answered Y, it slices, but the script did not run (the source defines `run_post_process_scripts` and calls it nowhere). The server answers Y only to `--save`, which exports no G-code; `slice` blanks the script unless allowed, and says so when allowed on 3.0.
-- **No installed list in 3.0.** Every profile in the vendor bundles is available. `find_profiles` lists what fits, and `install_profiles` changes nothing and says so. User presets do not show in `list_printers` yet.
+- **Profile updates from the CLI in 3.0.** `--preset-update-list` asks the preset repository (into `update_sync/`) and lists regular and forced updates, new and removed vendors; `--preset-update` installs them. `update_profiles` runs the first, and with `install: true` the second, refused while this version's GUI runs on the same data directory; it lists again afterwards. Measured on a copy of the data directory with the Prusa bundle set back one version: listed, installed, up to date. Pending forced updates make 3.0 refuse to slice ("Pending forced preset reconfigurations"); `slice` then points to `update_profiles`.
+- **No installed list in 3.0.** Every profile in the vendor bundles is available. `find_profiles` lists what fits, and `install_profiles` changes nothing and says so. `list_printers` shows the user's own presets from `presets/user` and the names of physical printers.
 
 ## Development
 

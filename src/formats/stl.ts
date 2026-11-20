@@ -37,3 +37,20 @@ export async function stlBounds(path: string): Promise<Bounds | null> {
   }
   return Number.isFinite(box.min[0]) ? box : null;
 }
+
+/** An STL file's triangles, binary or ASCII, as 9 floats each (three vertices). For drawing only. */
+export async function readStlTriangles(path: string): Promise<Float32Array> {
+  const data = await readFile(path);
+  const count = data.length >= 84 ? data.readUInt32LE(80) : -1;
+  if (count >= 0 && data.length === 84 + count * 50) {
+    const triangles = new Float32Array(count * 9);
+    for (let facet = 0; facet < count; facet++) {
+      const offset = 84 + facet * 50 + 12;
+      for (let i = 0; i < 9; i++) triangles[facet * 9 + i] = data.readFloatLE(offset + i * 4);
+    }
+    return triangles;
+  }
+  const values: number[] = [];
+  for (const match of data.toString("latin1").matchAll(/vertex\s+(\S+)\s+(\S+)\s+(\S+)/g)) values.push(Number(match[1]), Number(match[2]), Number(match[3]));
+  return Float32Array.from(values.slice(0, values.length - (values.length % 9)));
+}

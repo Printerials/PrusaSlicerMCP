@@ -113,7 +113,8 @@ export function runSlicer(binary: string, args: string[], options: RunOptions = 
 }
 
 /** One readable reason for a failed run, for the model and for the logs. */
-export function describeFailure(result: RunResult, what: string): string {
+/** crashHint replaces the usual guess at why PrusaSlicer crashed, when the caller knows better. */
+export function describeFailure(result: RunResult, what: string, crashHint?: string): string {
   if (result.aborted) return `${what} was cancelled.`;
   if (result.timedOut) return `${what} timed out. Raise PRUSASLICER_MCP_TIMEOUT_MS for large models.`;
   const crashed = result.signal === "SIGSEGV" || result.exitCode === 139 || result.exitCode === -1073741819;
@@ -121,7 +122,7 @@ export function describeFailure(result: RunResult, what: string): string {
   if (crashed) {
     return (
       `${what} failed: PrusaSlicer crashed (segmentation fault). ` +
-      "PrusaSlicer 2.9 does this when the printer preset does not exist or when the preset set is incomplete." +
+      (crashHint ?? "PrusaSlicer 2.9 does this when the printer preset does not exist or when the preset set is incomplete.") +
       (stderr ? `\n${stderr}` : "")
     );
   }

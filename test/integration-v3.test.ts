@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFile, cp, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { copyFile, cp, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -275,6 +275,57 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
     assert.equal(result.isError, true);
     assert.match(result.text, /cannot be told to open a project from outside/);
     assert.match(result.text, /to-open\.3mf/);
+  });
+
+  test("update_profiles on 3.0: an outdated bundle is listed and installed, on a copy of the data directory", async (t) => {
+    const status = await call("slicer_status");
+    const datadir: string | null = status.data.slicer.datadir;
+    if (!datadir) return t.skip("no 3.0 data directory");
+    const online = await fetch("https://preset-repo-api.prusa3d.com/", { signal: AbortSignal.timeout(10_000) }).then(() => true, () => false);
+    if (!online) return t.skip("Prusa's preset repository cannot be reached");
+    const copy = join(dir, "datadir-update");
+    await cp(datadir, copy, { recursive: true, filter: (source) => !source.endsWith(".lock") && !source.includes("backup_projects") });
+    // Set the Prusa bundle back one version, as if it were not updated yet.
+    const vendorFile = join(copy, "presets", "local", "prusa-research-fff", "PrusaResearch", "vendor.yaml");
+    const vendor = await readFile(vendorFile, "utf8").catch(() => null);
+    const current = vendor && /^version: (\S+)$/m.exec(vendor)?.[1];
+    if (!vendor || !current) return t.skip("no local Prusa FFF bundle");
+    const versions = [...(await readFile(join(copy, "presets", "local", "prusa-research-fff", "PrusaResearch.idx"), "utf8")).matchAll(/^(\d+\.\d+\.\d+)\s/gm)].map((m) => m[1]!);
+    const older = versions[versions.indexOf(current) + 1];
+    if (!older) return t.skip("no older bundle version in the index");
+    await writeFile(vendorFile, vendor.replace(/^version: \S+$/m, `version: ${older}`));
+
+    const other = new Client({ name: "integration-test-3-update", version: "0" });
+    await other.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: [join(root, "src", "index.ts")],
+        stderr: "ignore",
+        cwd: root,
+        env: { ...(process.env as Record<string, string>), PRUSASLICER_DATADIR: copy },
+      }),
+    );
+    const callCopy = async (name: string, args: Record<string, unknown>) => {
+      const result = await other.callTool({ name, arguments: args });
+      const text = (result.content as Array<{ type: string; text?: string }>).map((part) => part.text ?? "").join("\n");
+      return { isError: Boolean(result.isError), text, data: result.isError ? null : JSON.parse(text) };
+    };
+    try {
+      const check = await callCopy("update_profiles", {});
+      assert.equal(check.isError, false, check.text);
+      assert.equal(check.data.up_to_date, false);
+      const prusa = check.data.regular_updates.find((entry: { vendor: string }) => entry.vendor === "PrusaResearch");
+      assert.deepEqual([prusa.installed, prusa.recommended], [older, current]);
+
+      const installed = await callCopy("update_profiles", { install: true });
+      assert.equal(installed.isError, false, installed.text);
+      assert.ok(installed.data.installed.includes(`PrusaResearch ${older} -> ${current} (regular_updates)`), JSON.stringify(installed.data));
+      assert.equal(installed.data.still_pending, undefined);
+      assert.match(await readFile(vendorFile, "utf8"), new RegExp(`^version: ${current.replace(/\./g, "\\.")}$`, "m"));
+      assert.equal((await callCopy("update_profiles", {})).data.up_to_date, true);
+    } finally {
+      await other.close();
+    }
   });
 
   test("no presets given: the open project's presets, or a refusal that says why", async () => {

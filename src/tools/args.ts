@@ -24,7 +24,10 @@ export const transformsSchema = z
     align_xy: xy.optional().describe("Align the model to this XY point, in mm."),
     duplicate: z.number().int().min(1).max(500).optional().describe("Number of copies."),
     duplicate_grid: z.tuple([z.number().int().min(1), z.number().int().min(1)]).optional().describe("Copies in a grid of X by Y."),
-    merge: z.boolean().optional().describe("Arrange all inputs on one plate as a single model."),
+    merge: z
+      .boolean()
+      .optional()
+      .describe("Arrange all inputs on one plate as a single model. Works with PrusaSlicer 3.x; 2.9.7's command line crashes on it."),
     split: z.boolean().optional().describe("Split unconnected parts into separate objects."),
     dont_arrange: z.boolean().optional().describe("Keep the original XY positions instead of arranging."),
     ensure_on_bed: z.boolean().optional().describe("Lift parts that are below the bed (default true)."),
@@ -32,6 +35,9 @@ export const transformsSchema = z
   .strict();
 
 export type Transforms = z.infer<typeof transformsSchema>;
+
+/** Measured 2026-11-20: 2.9.7 exits on SIGSEGV with --merge, for slicing and export, even with one input. */
+export const MERGE_CRASH = "PrusaSlicer 2.9.7's command line crashes on --merge (transforms.merge), also with a single file; 3.x merges.";
 
 export function transformArgs(t: Transforms | undefined): string[] {
   if (!t) return [];
