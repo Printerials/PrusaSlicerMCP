@@ -1,8 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { mkdtemp, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { z } from "zod";
+import { needsBedCopy, occupiedBeds, writeBedCopy, type BedsInfo } from "../formats/beds.ts";
 import { readGcode } from "../formats/gcode.ts";
 import { readProject } from "../formats/threemf.ts";
 import { splitList } from "../formats/ini.ts";
@@ -43,6 +44,7 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
       description:
         "Slice models with PrusaSlicer and return the output path, print time, filament use and PrusaSlicer's warnings. Presets: the ones given; " +
         "otherwise a PrusaSlicer 3MF project's own config; otherwise the presets selected in PrusaSlicer. Missing preset names are refused with suggestions. " +
+        "A project with objects on more than one bed is sliced one bed per call (bed). " +
         "The output never replaces an existing file unless overwrite is set. Post-processing scripts from presets or projects do not run unless allow_post_process is set " +
           "and the user enabled it for the server (PRUSASLICER_MCP_ALLOW_POST_PROCESS=1).",
       inputSchema: z.object({
@@ -52,6 +54,15 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         filament: z.string().optional().describe("Filament preset (list_profiles)."),
         overrides: overridesSchema.optional(),
         transforms: transformsSchema.optional(),
+        bed: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "For a 3MF project with objects on more than one bed: the bed to slice, numbered as project_info lists them. " +
+              "PrusaSlicer's command line slices one bed per G-code; without bed such a project is refused with its beds listed.",
+          ),
         gcode_format: z
           .enum(["auto", "ascii", "binary"])
           .default("auto")
@@ -105,6 +116,8 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
       const projectIndex = projects.findIndex((p) => p && (p.kind === "prusaslicer-2" || p.kind === "prusaslicer-3") && p.config.size > 0);
       const project = projectIndex === -1 ? null : projects[projectIndex]!;
       const projectFile = projectIndex === -1 ? null : inputs.filter((input) => extname(input).toLowerCase() === ".3mf")[projectIndex]!;
+      const beds = inputs.length === 1 ? (projects[0]?.beds ?? null) : null;
+      const bed = chooseBed(beds, args.bed);
 
       let presetArgs: string[] = [];
       let projectStem: string | null = null;
@@ -223,6 +236,15 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
 
       await slicer.assertOutsideDatadir(destDir);
       const result = await withStaging(destDir, async (staging) => {
+        // A bed other than the first, or a 2.9 project with several beds: a copy PrusaSlicer slices
+        // as that bed (beds.ts), named as the project so the output name stays the project's.
+        let sliceInputs = inputs;
+        if (beds && bed && needsBedCopy(beds, bed.number)) {
+          const copyDir = join(staging, "bed");
+          await mkdir(copyDir);
+          sliceInputs = [join(copyDir, basename(inputs[0]!))];
+          await writeBedCopy(inputs[0]!, sliceInputs[0]!, beds, bed.number);
+        }
         const configPath = join(staging, "slice-config.json");
         if (patchedConfig) await writeFile(configPath, patchedConfig);
         const settingArgs = patchedConfig ? ["--load", configPath] : [...presetArgs, ...overrides.args, ...formatArgs, ...postProcessArgs];
@@ -236,7 +258,7 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
               args.stability_check ? "5" : "2",
               "--output",
               staging,
-              ...inputs,
+              ...sliceInputs,
             ],
             {
               timeoutMs: slicer.sliceTimeoutMs,
@@ -259,12 +281,14 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         let thumbnails: string | undefined;
         if (args.thumbnails) {
           try {
-            thumbnails = await addThumbnails(slicer, staged, inputs, args.transforms, ctx.mcpReq.signal);
+            thumbnails = await addThumbnails(slicer, staged, sliceInputs, args.transforms, ctx.mcpReq.signal, beds?.area);
           } catch (error) {
             thumbnails = `none: ${error instanceof Error ? error.message.split("\n")[0] : String(error)} (the G-code is as sliced)`;
           }
         }
-        const name = projectStem ? `${projectStem}${extname(produced[0]!)}` : produced[0]!;
+        const sliced = projectStem ? `${projectStem}${extname(produced[0]!)}` : produced[0]!;
+        // One G-code per bed: bed 2 of part.3mf becomes part-bed2.gcode.
+        const name = bed?.several ? `${sliced.slice(0, -extname(sliced).length)}-bed${bed.number}${extname(sliced)}` : sliced;
         const final = fileName ? join(destDir, fileName) : args.overwrite ? join(destDir, name) : await freeName(destDir, name);
         await commitFile(staged, final, args.overwrite);
         return { final, run, thumbnails };
@@ -296,6 +320,9 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         .filter((line) => line && !NOISE.test(line))
         .slice(0, 30);
       messages.push(...shadows.notes, ...(patch?.notes ?? []));
+      if (beds?.outside.length) {
+        messages.push(`On no bed, so PrusaSlicer left out: ${beds.outside.map((item) => item.name).join(", ")}.`);
+      }
       if (args.allow_post_process && info.backend.major >= 3) {
         messages.push(
           "PrusaSlicer 3.0.0-alpha14 does not run post-processing scripts from its command line (checked: the script did not run after the slice), so this G-code is as sliced.",
@@ -333,6 +360,7 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         overrides: overrides.keys.length ? overrides.keys : undefined,
         overrides_confirmed: applied ? applied.confirmed.filter((key) => requestedOverrides.has(key)) : undefined,
         transforms: args.transforms,
+        bed: bed && (bed.several || bed.number !== 1) ? { sliced: bed.number, of: beds!.beds.length, objects: bed.objects, note: bed.note } : undefined,
         post_process: args.allow_post_process ? "allowed" : "disabled",
         messages: messages.length ? messages : undefined,
         spool,
@@ -342,6 +370,45 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
       });
     },
   );
+}
+
+/**
+ * Which bed of a project to slice. PrusaSlicer's CLI slices one and drops the rest without a word,
+ * so a project with objects on several beds needs `bed`; one with a single bed in use gets that one,
+ * also when it is not the first.
+ */
+function chooseBed(
+  beds: BedsInfo | null,
+  asked: number | undefined,
+): { number: number; several: boolean; objects: string[]; note?: string } | null {
+  if (!beds) {
+    if (asked !== undefined) throw new Refusal("bed applies to a PrusaSlicer 3MF project given as the only input.");
+    return null;
+  }
+  if (beds.containers > 1) {
+    throw new Refusal(
+      `This project has ${beds.containers} printers (config containers). PrusaSlicer's command line slices one bed of the first; ` +
+        "this server does not slice such projects yet. Slice it in PrusaSlicer, or save one printer's part as a project of its own.",
+    );
+  }
+  const used = occupiedBeds(beds);
+  const listing = beds.beds.map((entry) => ({ bed: entry.bed, objects: entry.items.map((item) => (item.printable ? item.name : `${item.name} (not printable)`)) }));
+  const objectsOn = (number: number) => beds.beds[number - 1]!.items.filter((item) => item.printable).map((item) => item.name);
+  if (asked === undefined) {
+    if (used.length > 1) {
+      throw new Refusal(
+        `This project has objects on ${used.length} beds, and PrusaSlicer's command line slices one bed per G-code (it leaves the others out without a word). ` +
+          `Slice them one call each with bed (${used.map((entry) => entry.bed).join(", ")}).`,
+        { beds: listing },
+      );
+    }
+    const only = used[0]?.bed ?? 1;
+    return { number: only, several: false, objects: objectsOn(only), note: only !== 1 ? `Bed ${only} is the only one with objects; PrusaSlicer's command line would have sliced the empty bed 1.` : undefined };
+  }
+  if (asked > beds.beds.length || !used.some((entry) => entry.bed === asked)) {
+    throw new Refusal(`Bed ${asked} has nothing to print on it.`, { beds: listing });
+  }
+  return { number: asked, several: used.length > 1, objects: objectsOn(asked) };
 }
 
 /**

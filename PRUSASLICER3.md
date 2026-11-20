@@ -60,7 +60,9 @@ Paths in source references are relative to `src/` of that checkout. Where the se
 - **Thumbnails** only when the single input is a 3MF that contains `Metadata/thumbnail.png`. That PNG is scaled to fill each size the printer asks for and cut to it (`resize_and_crop`), then written as the preset says (QOI, PNG); STL input gives none. Same as 2.9.7. (measured, also with `--load`; source `CLIRuntime.cpp:38-43`, `3mf.cpp:883-918`)
 - **Several input files give several G-code files,** one per input, unless `--merge` is given; `--merge` puts them on one plate (two cubes: 7.17 g against 3.61 g for one). 2.9.7 does the same without `--merge`, and crashes with it. (measured)
 - **Same print as 2.9.7.** A 3DBenchy on a CORE One with 0.15mm BALANCED and Prusament PLA: 11.12 g and 52m35s with 2.9.7, 11.13 g and 52m41s with alpha14, with 2649 and 2687 lifted moves. (measured; `test/integration-benchy.test.ts`)
-- **Multi-bed projects:** the CLI slices only the selected bed. (source `ProcessActions.cpp:293-303`)
+- **Multi-bed projects: the CLI slices one bed and drops the others without a word.** Three cubes on three beds (exported by 3.0 itself with `--duplicate 3`) gave one cube's G-code, exit 0. Which bed: the one at the first position, also with the `beds` list in the project JSON reordered. (measured; source `ProcessActions.cpp:293-303`)
+  - Bed positions are in `config_containers[i].beds` (`position_x`, `position_y`; the CORE One's at 0, 270, 540), each with its own `custom_gcode` (`{mode, gcodes: [{gcode: {type, print_z, extruder, color, extra}}]}`) and `wipe_tower` (`{x, y, rotation_angle}` or null). (measured; source `PrusaFile.cpp:1643-1680`)
+  - Moving the objects of bed 2 onto bed 1 and back the other way, with the two beds' `custom_gcode` exchanged, made the CLI slice bed 2 with bed 2's pause. 3.0 applies each bed's own pauses, unlike 2.9.7's CLI (see the README). (measured)
 
 ## Geometry
 
@@ -125,7 +127,7 @@ Paths in source references are relative to `src/` of that checkout. Where the se
 
 ## What the server does with it
 
-- `slice`: settings through one patched `--load` config, written into every section that holds the key and read back per section before slicing; the format by the extension of `output_filename_format`; `stability_check` from the trace log; thumbnails drawn by the server and written into the G-code after slicing, as for 2.9. (`src/slicer/v3-config.ts`, `src/tools/slice.ts`, `src/tools/thumbnails.ts`)
+- `slice`: a project with objects on several beds is refused without `bed`, and sliced bed by bed with it (`src/formats/beds.ts`). Settings through one patched `--load` config, written into every section that holds the key and read back per section before slicing; the format by the extension of `output_filename_format`; `stability_check` from the trace log; thumbnails drawn by the server and written into the G-code after slicing, as for 2.9. (`src/slicer/v3-config.ts`, `src/tools/slice.ts`, `src/tools/thumbnails.ts`)
 - `edit_project`: rewrites only the project JSON, checks by loading the result with the CLI, reports per-object overrides. (`src/tools/edit-project-v3.ts`) Measured: PrusaSlicer loads the written values back, the edited project slices with them (a lift of 0.4 mm on 263 of 264 lifted moves), and every other zip entry is byte-identical.
 - `create_filament_preset`: YAML in `presets/user`, checked and rolled back. (`src/slicer/filament-preset-v3.ts`) Measured on a copy of the data directory: listed at once, sliced with (the G-code has its temperature), overwritten with the same ids.
 - `model_info` and `export_model`: X/Y from the mesh where `--info` includes the origin; `--dont-arrange` on export.

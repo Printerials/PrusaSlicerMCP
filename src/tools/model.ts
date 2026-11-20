@@ -7,6 +7,7 @@ import { parseInfo, type ModelInfo } from "../formats/info.ts";
 import { stlBounds } from "../formats/stl.ts";
 import type { SlicerContext } from "../context.ts";
 import { readProject } from "../formats/threemf.ts";
+import { occupiedBeds } from "../formats/beds.ts";
 import { describeFailure } from "../slicer/run.ts";
 import { Refusal } from "../util/errors.ts";
 import { commitFile, outputTarget, requireFile, stem, withStaging } from "../util/paths.ts";
@@ -44,7 +45,7 @@ export function registerModel(server: McpServer, { slicer }: ToolDeps): void {
       title: "3MF project contents",
       description:
         "What a 3MF project holds besides geometry: the presets it was made with, the settings it changes compared to those presets " +
-        "(when they are installed here), per-object and per-height-range settings, colour changes and pauses, and the thumbnail. " +
+        "(when they are installed here), per-object and per-height-range settings, colour changes and pauses, the beds and what stands on each, and the thumbnail. " +
         "Recognizes PrusaSlicer 2.x and 3.x projects; Bambu Studio and OrcaSlicer projects are identified but their settings are not PrusaSlicer's.",
       inputSchema: z.object({
         path: z.string().describe("Absolute path to a .3mf file."),
@@ -75,6 +76,7 @@ export function registerModel(server: McpServer, { slicer }: ToolDeps): void {
         }
       }
 
+      const severalBeds = project.beds ? occupiedBeds(project.beds).length > 1 : false;
       const script = project.config.get("post_process")?.trim();
       const body = {
         path: file,
@@ -97,6 +99,13 @@ export function registerModel(server: McpServer, { slicer }: ToolDeps): void {
             : undefined,
           layer_ranges: object.layer_ranges.length ? object.layer_ranges : undefined,
         })),
+        beds: severalBeds ? project.beds!.beds.map((entry) => ({ bed: entry.bed, objects: entry.items.map((item) => (item.printable ? item.name : `${item.name} (not printable)`)) })) : undefined,
+        not_on_a_bed: project.beds?.outside.length ? project.beds.outside.map((item) => item.name) : undefined,
+        beds_note: severalBeds
+          ? "PrusaSlicer's command line slices one bed per G-code and leaves the others out without a word: slice takes bed, one call per bed."
+          : project.beds?.outside.length
+            ? "Objects on no bed are left out when PrusaSlicer slices."
+            : undefined,
         custom_gcodes: project.custom_gcodes.length ? project.custom_gcodes : undefined,
         variable_layer_height: project.variable_layer_height || undefined,
         has_thumbnail: project.thumbnail !== null,

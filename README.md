@@ -73,9 +73,9 @@ Claude Desktop (`claude_desktop_config.json`):
 | `disconnect_printerials` | Revoke that link at Printerials and remove it here |
 | `list_spools` | Spools on your Printerials shelf or in Spoolman: filament, grams left (weighed), price per kg, location |
 | `record_spool_usage` | Subtract what a print used from a spool, after the user confirmed the print was made |
-| `slice` | Slice to G-code with presets, a project's config or the GUI selection, plus overrides and transforms, with thumbnails for the printer's display |
+| `slice` | Slice to G-code with presets, a project's config or the GUI selection, plus overrides and transforms, with thumbnails for the printer's display; a project on several beds one bed per call |
 | `model_info` | PrusaSlicer's mesh analysis: size, volume, facets, parts, manifold |
-| `project_info` | A 3MF's presets, settings it changes, per-object and per-range settings, colour changes, thumbnail |
+| `project_info` | A 3MF's presets, settings it changes, per-object and per-range settings, colour changes, the beds and what stands on each, thumbnail |
 | `edit_project` | Switch a 3MF project's filament or print preset and change its settings; PrusaSlicer loads the result to check every value, and it can open it in the GUI |
 | `export_model` | Arrange, rotate, scale, duplicate, split or cut, and write 3MF/STL/OBJ |
 | `gcode_info` | Time, filament, cost, layers, objects; for ASCII also filament per feature and pause/colour/tool events |
@@ -140,6 +140,10 @@ These were verified against PrusaSlicer 2.9.7 on macOS, and the server is built 
   - They go into the G-code where PrusaSlicer puts its own, after the slice: in ASCII after the first line, in binary G-code as thumbnail blocks after the printer metadata. The unit tests compare the blocks and the QOI encoding byte for byte with PrusaSlicer's, and the integration tests re-encode PrusaSlicer's own thumbnails to the same bytes. The result is read back (binary: every block checksum) before it replaces the sliced file; when anything fails, the G-code stays as sliced and `thumbnails` says why.
   - The model is the STL itself, or PrusaSlicer's `--export-stl` with the same transforms. A 3MF with its own thumbnail gets PrusaSlicer's. `thumbnails: false` turns it off.
   - Handing PrusaSlicer a 3MF with a PNG in it instead was measured and dropped: 2.9 does not arrange a 3MF when slicing (its positions count as meant), and its `--export-3mf` does not arrange either, so the model would have landed elsewhere on the bed.
+- **A project on several beds: the CLI slices one and drops the rest without a word.** A project with a cube on each of three beds gave the G-code of the first, exit 0, in 2.9.7 and in 3.0.0-alpha14. Objects on no bed are left out the same way.
+  - **Where the beds are.** 2.9 keeps them implicit: bed i lies on a grid at the bed's size plus a gap of min(100 mm, 0.3 × its diagonal), up to 9 beds, and an object belongs to the bed it lies wholly inside (source 2.9.7 `MultipleBeds.cpp`; a CORE One's second bed starts at x 349.9). 3.0 lists its beds with their positions in the project JSON.
+  - **2.9.7 applies the wrong bed's colour changes and pauses.** With more than one bed in use its CLI gave bed 1 the pauses of bed 2, and none when bed 2 had none; with one bed in use, bed 1's (measured in five projects). 3.0 keeps each bed's own.
+  - **What the server does** (`src/formats/beds.ts`). `project_info` lists the beds and what stands on each, and the objects on no bed. `slice` refuses a project with objects on several beds and lists them; with `bed` it slices that one. For another bed than the first it slices a copy in which that bed and bed 1 change places (their objects, and in 3.0 their pauses and wipe towers), which made both versions slice the chosen bed. A 2.9 project with several beds always goes through a copy that gives every bed the chosen bed's colour changes, pauses and wipe tower, so the CLI applies them whichever it reads. The G-code is named with `-bed<N>`, and its thumbnails show that bed only. A single bed in use is sliced whichever it is. 3.0 projects with more than one printer are refused.
 - **Several input files give several G-code files.** Without `--merge`, 2.9.7 and 3.0.0-alpha14 slice each input to a G-code of its own. `slice` returns one, so it refuses several inputs without `transforms.merge`. 2.9.7's `--merge` crashes (exit 139), also with one file and for `--export-stl`; 3.0 merges.
 
 ## Linux

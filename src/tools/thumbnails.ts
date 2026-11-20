@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import type { SlicerContext } from "../context.ts";
+import type { Footprint } from "../formats/beds.ts";
 import { readGcode } from "../formats/gcode.ts";
 import { insertThumbnails, parseThumbnailSpec, type EncodedThumbnail, type ThumbnailSpec } from "../formats/gcode-thumbnails.ts";
 import { encodePng, encodeQoi } from "../formats/image.ts";
@@ -26,8 +27,9 @@ const label = (spec: ThumbnailSpec) => `${spec.width}x${spec.height}/${spec.form
  *
  * The model is the input itself for a single STL without transforms; otherwise PrusaSlicer exports
  * it as STL with the same transforms. Several objects are drawn where the export puts them, which
- * need not be where the slice arranged them. Returns what the G-code holds now; throws when it
- * could not be done, leaving the G-code as sliced.
+ * need not be where the slice arranged them. With `area`, only what lies within it is drawn: the
+ * bed a project's G-code is for (its other beds are in the export too). Returns what the G-code
+ * holds now; throws when it could not be done, leaving the G-code as sliced.
  */
 export async function addThumbnails(
   slicer: SlicerContext,
@@ -35,6 +37,7 @@ export async function addThumbnails(
   inputs: string[],
   transforms: Transforms | undefined,
   signal?: AbortSignal,
+  area?: Footprint,
 ): Promise<string> {
   const { report, config } = await readGcode(gcode);
   if (report.thumbnails.length) return "from the 3MF's own thumbnail, embedded by PrusaSlicer";
@@ -44,8 +47,9 @@ export async function addThumbnails(
   const skipped = specs.filter((spec) => !writable.includes(spec));
   if (writable.length === 0) return `none: the printer asks for ${specs.map(label).join(", ")}; this server writes PNG and QOI up to ${MAX_SIDE} px`;
 
-  const triangles = await meshOf(slicer, inputs, transforms, signal);
-  if (triangles.length === 0) throw new Error("the model has no triangles to draw");
+  const mesh = await meshOf(slicer, inputs, transforms, signal);
+  const triangles = area ? within(mesh, area) : mesh;
+  if (triangles.length === 0) throw new Error(area && mesh.length ? "nothing of the model lies on the bed that was sliced" : "the model has no triangles to draw");
   const colour = parseColour(firstOf(config.get("extruder_colour"))) ?? parseColour(firstOf(config.get("filament_colour"))) ?? DEFAULT_COLOUR;
   const thumbnails: EncodedThumbnail[] = [];
   for (const spec of writable) {
@@ -62,6 +66,19 @@ export async function addThumbnails(
     `${writable.map(label).join(", ")}, drawn by this server from the model as PrusaSlicer draws them (PrusaSlicer's CLI renders none)` +
     (skipped.length ? `; not written: ${skipped.map(label).join(", ")} (PNG and QOI up to ${MAX_SIDE} px only)` : "")
   );
+}
+
+/** The triangles that lie wholly within the area, in X and Y (with 1 mm to spare). */
+export function within(triangles: Float32Array, area: Footprint): Float32Array {
+  const kept: number[] = [];
+  for (let t = 0; t + 9 <= triangles.length; t += 9) {
+    let inside = true;
+    for (let v = t; v < t + 9 && inside; v += 3) {
+      inside = triangles[v]! >= area.minX - 1 && triangles[v]! <= area.maxX + 1 && triangles[v + 1]! >= area.minY - 1 && triangles[v + 1]! <= area.maxY + 1;
+    }
+    if (inside) for (let i = t; i < t + 9; i++) kept.push(triangles[i]!);
+  }
+  return Float32Array.from(kept);
 }
 
 async function meshOf(slicer: SlicerContext, inputs: string[], transforms: Transforms | undefined, signal?: AbortSignal): Promise<Float32Array> {

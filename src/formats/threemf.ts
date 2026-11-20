@@ -1,6 +1,7 @@
 import { parseCommentedConfig, splitList, type FlatConfig } from "./ini.ts";
 import { flattenConfiguration, presetNames } from "../slicer/v3.ts";
 import { ZipReader } from "./zip.ts";
+import { findBeds, type BedsInfo } from "./beds.ts";
 
 /**
  * What a 3MF project holds besides geometry.
@@ -27,6 +28,8 @@ export interface ObjectInfo {
 }
 
 export interface CustomGcode {
+  /** The bed it is for (1-based): 2.9 keeps them per bed. */
+  bed: number;
   print_z: number;
   type: string;
   extruder: number | null;
@@ -45,6 +48,8 @@ export interface ProjectRead {
   variable_layer_height: boolean;
   thumbnail: Buffer | null;
   entries: string[];
+  /** The beds and what stands on each (beds.ts); null for other 3MFs or without a bed shape. */
+  beds: BedsInfo | null;
 }
 
 /** Volume and object metadata that describe the mesh, not print settings. */
@@ -81,13 +86,23 @@ export async function readProject(path: string): Promise<ProjectRead> {
       variable_layer_height: zip.find("Metadata/Slic3r_PE_layer_heights_profile.txt") !== undefined,
       thumbnail: await zip.read("Metadata/thumbnail.png"),
       entries: [...zip.entries.keys()],
+      beds: null,
     };
 
     const v3 = await zip.readText("Metadata/PrusaSlicer3_project.json");
     const v2 = await zip.readText("Metadata/Slic3r_PE.config");
     if (v3) {
       result.kind = "prusaslicer-3";
-      readV3Project(v3, result);
+      const data = readV3Project(v3, result);
+      const container = data.config_containers?.[0];
+      result.beds = findBeds({
+        kind: "prusaslicer-3",
+        modelXml: model,
+        bedShape: (container?.configuration?.printer_settings as Record<string, unknown> | undefined)?.bed_shape,
+        beds3: Array.isArray(container?.beds) ? (container.beds as Array<{ position_x?: number; position_y?: number }>) : null,
+        containers: data.config_containers?.length ?? 1,
+        names: new Map(),
+      });
     } else if (v2 !== null) {
       result.kind = "prusaslicer-2";
       result.config = parseCommentedConfig(v2);
@@ -107,6 +122,16 @@ export async function readProject(path: string): Promise<ProjectRead> {
       if (ranges) attachLayerRanges(ranges, result.objects);
       const custom = await zip.readText("Metadata/Prusa_Slicer_custom_gcode_per_print_z.xml");
       if (custom) result.custom_gcodes = parseCustomGcodes(custom);
+      if (result.kind === "prusaslicer-2") {
+        result.beds = findBeds({
+          kind: "prusaslicer-2",
+          modelXml: model,
+          bedShape: result.config.get("bed_shape"),
+          beds3: null,
+          containers: 1,
+          names: instanceNames(result.objects),
+        });
+      }
     }
     return result;
   } finally {
@@ -114,11 +139,13 @@ export async function readProject(path: string): Promise<ProjectRead> {
   }
 }
 
-function readV3Project(text: string, result: ProjectRead): void {
-  const data = JSON.parse(text) as {
-    objects?: unknown;
-    config_containers?: Array<{ preset?: unknown; configuration?: Record<string, unknown> }>;
-  };
+interface V3ProjectData {
+  objects?: unknown;
+  config_containers?: Array<{ preset?: unknown; configuration?: Record<string, unknown>; beds?: unknown }>;
+}
+
+function readV3Project(text: string, result: ProjectRead): V3ProjectData {
+  const data = JSON.parse(text) as V3ProjectData;
   const container = data.config_containers?.[0];
   if (container?.configuration) result.config = flattenConfiguration(container.configuration);
   const names = presetNames(container?.preset);
@@ -144,6 +171,43 @@ function readV3Project(text: string, result: ProjectRead): void {
       };
     });
   }
+  // Colour changes and pauses per bed: beds[i].custom_gcode = {mode, gcodes: [{gcode: {type,
+  // print_z, extruder, color, extra}}]} (source PrusaFile.cpp; types in 2.x's order).
+  const beds = Array.isArray(container?.beds) ? (container.beds as Array<{ custom_gcode?: { gcodes?: Array<{ gcode?: Record<string, unknown> }> } | null }>) : [];
+  result.custom_gcodes = beds
+    .flatMap((bed, index) =>
+      (bed?.custom_gcode?.gcodes ?? []).flatMap(({ gcode }) =>
+        gcode
+          ? [
+              {
+                bed: index + 1,
+                print_z: Number(gcode.print_z),
+                type: CUSTOM_GCODE_TYPES[Number(gcode.type)] ?? String(gcode.type),
+                extruder: gcode.extruder === undefined ? null : Number(gcode.extruder),
+                color: typeof gcode.color === "string" && gcode.color ? gcode.color : null,
+                gcode: typeof gcode.extra === "string" && gcode.extra ? gcode.extra : null,
+              },
+            ]
+          : [],
+      ),
+    )
+    .sort((x, y) => x.bed - y.bed || x.print_z - y.print_z);
+  return data;
+}
+
+/**
+ * 2.9 writes each instance as a 3MF object of its own, with consecutive ids, and names only the
+ * first in Slic3r_PE_model.config (with instances_count); seen in a project 2.9.7 exported.
+ */
+function instanceNames(objects: ObjectInfo[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const object of objects) {
+    const first = Number(object.id);
+    const count = object.instances ?? 1;
+    if (!object.name || !Number.isInteger(first)) continue;
+    for (let i = 0; i < count; i++) names.set(String(first + i), count > 1 ? `${object.name} (instance ${i + 1})` : object.name);
+  }
+  return names;
 }
 
 // ─── A small XML tokenizer, enough for PrusaSlicer's flat metadata files ─────
@@ -259,10 +323,14 @@ function attachLayerRanges(xml: string, objects: ObjectInfo[]): void {
 
 function parseCustomGcodes(xml: string): CustomGcode[] {
   const codes: CustomGcode[] = [];
+  // 2.9 writes a block per bed with bed_idx; older projects have one block without it (bed 1).
+  let bed = 1;
   for (const tag of tags(xml)) {
+    if (!tag.closing && tag.attrs.bed_idx !== undefined) bed = Number(tag.attrs.bed_idx) + 1;
     if (tag.name !== "code" || tag.closing) continue;
     const type = Number(tag.attrs.type);
     codes.push({
+      bed,
       print_z: Number(tag.attrs.print_z),
       type: CUSTOM_GCODE_TYPES[type] ?? tag.attrs.type ?? "unknown",
       extruder: tag.attrs.extruder ? Number(tag.attrs.extruder) : null,
@@ -270,5 +338,5 @@ function parseCustomGcodes(xml: string): CustomGcode[] {
       gcode: tag.attrs.gcode || tag.attrs.extra || null,
     });
   }
-  return codes.sort((a, b) => a.print_z - b.print_z);
+  return codes.sort((a, b) => a.bed - b.bed || a.print_z - b.print_z);
 }
