@@ -41,7 +41,8 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
       description:
         "Slice models with PrusaSlicer and return the output path, print time, filament use and PrusaSlicer's warnings. Presets: the ones given; " +
         "otherwise a PrusaSlicer 3MF project's own config; otherwise the presets selected in PrusaSlicer. Missing preset names are refused with suggestions. " +
-        "The output never replaces an existing file unless overwrite is set. Post-processing scripts from presets or projects do not run unless allow_post_process is set.",
+        "The output never replaces an existing file unless overwrite is set. Post-processing scripts from presets or projects do not run unless allow_post_process is set " +
+          "and the user enabled it for the server (PRUSASLICER_MCP_ALLOW_POST_PROCESS=1).",
       inputSchema: z.object({
         inputs: z.array(z.string()).min(1).max(50).describe("Absolute paths of STL, 3MF, OBJ, STEP or AMF files."),
         printer: z.string().optional().describe("Printer preset (list_printers)."),
@@ -58,7 +59,13 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
           .optional()
           .describe("Absolute output file (.gcode/.bgcode) or existing directory. Default: next to the first input, named by the preset's output_filename_format."),
         overwrite: z.boolean().default(false),
-        allow_post_process: z.boolean().default(false).describe("Run the post_process scripts the presets or the project define."),
+        allow_post_process: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Run the post_process scripts the presets or the project define. Works only when the user started the server with " +
+              "PRUSASLICER_MCP_ALLOW_POST_PROCESS=1; otherwise the slice is refused.",
+          ),
         spool_id: z.number().int().optional().describe("A spool (list_spools) to print from: checks that enough is left on it and prices the print at what it cost."),
         stability_check: z
           .boolean()
@@ -109,6 +116,12 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
       }
 
       const info = await slicer.info();
+      if (args.allow_post_process && !slicer.postProcessAllowed) {
+        throw new Refusal(
+          "Post-processing scripts run programs on this computer, and a downloaded project can carry one. allow_post_process works only when the " +
+            "user runs this server with PRUSASLICER_MCP_ALLOW_POST_PROCESS=1 in its environment (the MCP configuration). Without it, slice keeps scripts off.",
+        );
+      }
       if (args.stability_check && !info.backend.patchConfig) {
         throw new Refusal(
           "stability_check needs PrusaSlicer 3.x. 2.9's CLI runs the check but reports nothing, not even in its trace log; only the GUI shows it.",
@@ -252,6 +265,11 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
         .filter((line) => line && !NOISE.test(line))
         .slice(0, 30);
       messages.push(...shadows.notes, ...(patch?.notes ?? []));
+      if (args.allow_post_process && info.backend.major >= 3) {
+        messages.push(
+          "PrusaSlicer 3.0.0-alpha14 does not run post-processing scripts from its command line (checked: the script did not run after the slice), so this G-code is as sliced.",
+        );
+      }
       if (applied?.missing.length) {
         messages.push(`Not found in the config PrusaSlicer loaded, so not confirmed: ${applied.missing.join(", ")}.`);
       }

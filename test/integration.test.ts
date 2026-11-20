@@ -175,13 +175,21 @@ describe("against the installed PrusaSlicer", { skip }, () => {
     const files: Record<string, Buffer | string> = {};
     for (const name of zip.entries.keys()) files[name] = (await zip.read(name))!;
     await zip.close();
-    files["Metadata/Slic3r_PE.config"] = [
-      `; printer_settings_id = ${printer}`,
-      `; print_settings_id = ${prints[0]}`,
-      `; filament_settings_id = "${filament}"`,
-      `; post_process = ${script}`,
-      "",
-    ].join("\n");
+    const v3Project = files["Metadata/PrusaSlicer3_project.json"];
+    if (v3Project) {
+      // PrusaSlicer 3.0 wrote a project config of its own into the geometry: the script goes there.
+      const json = JSON.parse(v3Project.toString());
+      for (const container of json.config_containers) container.configuration.print_settings.post_process = [script];
+      files["Metadata/PrusaSlicer3_project.json"] = JSON.stringify(json);
+    } else {
+      files["Metadata/Slic3r_PE.config"] = [
+        `; printer_settings_id = ${printer}`,
+        `; print_settings_id = ${prints[0]}`,
+        `; filament_settings_id = "${filament}"`,
+        `; post_process = ${script}`,
+        "",
+      ].join("\n");
+    }
     await writeZip(join(dir, "project.3mf"), files);
 
     const info = await call("project_info", { path: join(dir, "project.3mf") });
@@ -192,9 +200,36 @@ describe("against the installed PrusaSlicer", { skip }, () => {
     assert.equal(guarded.data.presets.source, "project");
     assert.equal(existsSync(marker), false, "the script ran although it was not allowed");
 
-    const allowed = await call("slice", { inputs: [join(dir, "project.3mf")], output: join(dir, "project2.gcode"), allow_post_process: true });
-    assert.equal(allowed.isError, false, allowed.text);
-    assert.equal(existsSync(marker), true, "allow_post_process did not run the script");
+    // allow_post_process alone is not enough: the user has to switch scripts on for the server.
+    if (process.env.PRUSASLICER_MCP_ALLOW_POST_PROCESS !== "1") {
+      const refused = await call("slice", { inputs: [join(dir, "project.3mf")], output: join(dir, "project2.gcode"), allow_post_process: true });
+      assert.equal(refused.isError, true, "allow_post_process ran without the server's opt-in");
+      assert.match(refused.text, /PRUSASLICER_MCP_ALLOW_POST_PROCESS=1/);
+      assert.equal(existsSync(marker), false, "the script ran although the server did not allow scripts");
+    }
+    const permitted = new Client({ name: "integration-test-scripts", version: "0" });
+    await permitted.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: [join(root, "src", "index.ts")],
+        stderr: "ignore",
+        cwd: root,
+        env: { ...(process.env as Record<string, string>), PRUSASLICER_MCP_ALLOW_POST_PROCESS: "1" },
+      }),
+    );
+    try {
+      const allowed = await permitted.callTool({ name: "slice", arguments: { inputs: [join(dir, "project.3mf")], output: join(dir, "project2.gcode"), allow_post_process: true } });
+      assert.equal(Boolean(allowed.isError), false, JSON.stringify(allowed.content));
+      if (v3Project) {
+        // 3.0.0-alpha14 does not run post-processing scripts from its CLI at all, and says so.
+        assert.equal(existsSync(marker), false);
+        assert.match(JSON.stringify(allowed.content), /does not run post-processing scripts/);
+      } else {
+        assert.equal(existsSync(marker), true, "allow_post_process did not run the script with the server's opt-in");
+      }
+    } finally {
+      await permitted.close();
+    }
 
     // A project whose output_filename_format climbs out of the output directory. PrusaSlicer 2.9.7
     // follows it and replaces whatever file is there (verified with ../../victim.txt).

@@ -80,7 +80,7 @@ export function registerModel(server: McpServer, { slicer }: ToolDeps): void {
         path: file,
         kind: project.kind,
         warning: script
-          ? `This project sets a post-processing script that PrusaSlicer runs after slicing: ${clip(script)}. slice keeps it off unless allow_post_process is set.`
+          ? `This project sets a post-processing script that PrusaSlicer runs after slicing: ${clip(script)}. slice keeps it off unless allow_post_process is set and the user enabled scripts for this server (PRUSASLICER_MCP_ALLOW_POST_PROCESS=1).`
           : undefined,
         application: project.application,
         title: project.title,

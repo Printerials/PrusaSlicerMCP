@@ -35,6 +35,13 @@ Paths in source references are relative to `src/` of that checkout. Where the se
 - **Settings catalogue.** `--help-fff` prints only the general help. `--export-config-schema FILE` writes, per section, `name`, `type`, `min`, `max`, `enum_values`, `location`, `overrides_in` and the default. It has no descriptions, and it logs an error about a missing bed model while still writing the file. (measured)
 - **Unknown presets are refused** (exit 1, `Printer profile 'X' wasn't found.`), not replaced by the GUI's selection as in 2.9. `--tool-print-profile` is not needed. (measured)
 
+## Post-processing scripts
+
+- **A script in the config makes the CLI ask `Continue(Y/N) ?` on stdin**, after loading the inputs and `--load` and before any action. Any answer but Y (a closed stdin too) stops it with no output and exit 0, also for a plain `--save`. (measured; source `CLIApp.cpp:245`, `LoadPrintData.cpp:561-607`)
+- **Answered Y, nothing runs:** a `--save` writes the config, and an `--export-gcode` writes the G-code, but the script did not run in either case. The source defines `run_post_process_scripts` (`GCode/PostProcessor.cpp:983`) and nothing calls it. (measured)
+- A `--load` config without a script, given next to a project that has one, asks nothing: the `--load` replaces the project's config before the check. (measured)
+- The server answers Y to `--save` only (it exports no G-code), blanks the script for a slice unless the user allowed scripts, and says on 3.0 that an allowed script did not run.
+
 ## Queries
 
 - `--query-printer-models` and `--query-print-tool-filament-profiles --printer-profile X` print their JSON between log lines; with `--output FILE` they write clean JSON. (measured)

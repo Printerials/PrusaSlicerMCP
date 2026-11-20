@@ -73,7 +73,7 @@ export function checkOverrides(overrides: Overrides | undefined, catalog: Readon
   for (const [rawKey, rawValue] of Object.entries(overrides ?? {})) {
     const key = rawKey.trim().replace(/^--/, "").replace(/-/g, "_");
     if (BLOCKED.has(key)) {
-      throw new Refusal(`${key} cannot be set through overrides.${key === "post_process" ? " Post-processing scripts stay off unless allow_post_process is set, and then come from the presets." : ""}`);
+      throw new Refusal(`${key} cannot be set through overrides.${key === "post_process" ? " Post-processing scripts stay off unless allow_post_process is set (and enabled for the server), and then come from the presets." : ""}`);
     }
     if (!catalog.has(key)) throw new Refusal(`Unknown setting "${rawKey}".`, { did_you_mean: suggest(key, catalog.keys()) });
     // Values are left to PrusaSlicer to judge: some enums (filament_type) accept custom values.

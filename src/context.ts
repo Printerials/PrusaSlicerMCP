@@ -70,8 +70,15 @@ export class SlicerContext {
   private caches = new Map<string, Cached<unknown>>();
   private readonly env: NodeJS.ProcessEnv;
 
+  /**
+   * Post-processing scripts run programs on this computer, and a downloaded 3MF can carry one.
+   * A tool argument alone could be set by a misled agent, so the user switches it on for the server.
+   */
+  readonly postProcessAllowed: boolean;
+
   constructor(env: NodeJS.ProcessEnv = process.env) {
     this.env = env;
+    this.postProcessAllowed = env.PRUSASLICER_MCP_ALLOW_POST_PROCESS === "1";
     const timeout = Number(env.PRUSASLICER_MCP_TIMEOUT_MS);
     this.sliceTimeoutMs = Number.isFinite(timeout) && timeout > 0 ? timeout : 10 * 60_000;
   }
@@ -436,7 +443,10 @@ export class SlicerContext {
     const dir = await mkdtemp(join(tmpdir(), "prusaslicer-mcp-"));
     try {
       const out = join(dir, info.backend.major >= 3 ? "config.json" : "config.ini");
-      const result = await this.run([...args, ...info.backend.saveConfigArgs(out)]);
+      // 3.0 asks "Continue(Y/N) ?" on stdin when the loaded config has a post_process script, and
+      // without a Y it stops with no output and exit 0. A --save exports no G-code, so no script
+      // runs (3.0.0-alpha14: the config came out, the script did not run).
+      const result = await this.run([...args, ...info.backend.saveConfigArgs(out)], info.backend.major >= 3 ? { stdin: "Y\n" } : {});
       if (!existsSync(out)) throw new Refusal(describeFailure(result, "Resolving the presets"));
       return await readFile(out, "utf8");
     } finally {

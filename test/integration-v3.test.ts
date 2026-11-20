@@ -152,7 +152,8 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
     const result = await call("slice", { inputs: [join(dir, "cube.stl")], printer, print, filament, gcode_format: "ascii", output: join(dir, "stable.gcode"), stability_check: true });
     assert.equal(result.isError, false, result.text);
     assert.equal(result.data.stability.issues_found, false);
-    assert.equal(result.data.messages?.some((line: string) => line.startsWith("[20")), undefined, "trace lines leaked into messages");
+    const messages: string[] = result.data.messages ?? [];
+    assert.ok(!messages.some((line) => line.startsWith("[20")), `trace lines leaked into messages: ${JSON.stringify(messages)}`);
   });
 
   /** A 3.0 project: the cube's geometry as PrusaSlicer exports it, with the project config alpha14 wrote for it. */

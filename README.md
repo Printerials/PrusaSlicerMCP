@@ -1,5 +1,7 @@
 # prusaslicer-mcp
 
+> **Work in progress.** Until PrusaSlicer 3.0 is officially released, its support here is experimental. It is checked against 3.0.0-alpha14 only, and a later alpha, beta or the release may change what the server relies on: [PRUSASLICER3.md](PRUSASLICER3.md) lists what was measured. PrusaSlicer 2.9 is the version the server is built and tested for.
+
 An MCP server for the PrusaSlicer on your machine. It explores profiles, slices with your presets, transforms models, reads and edits G-code, and looks at the running GUI.
 
 PrusaSlicer is the source of truth. Profiles, compatibility, inheritance, slicing and mesh analysis come from PrusaSlicer itself, through its CLI. The server only parses what the CLI does not give: G-code, binary G-code and 3MF project metadata. There is no recommendation engine and no filament database of its own.
@@ -7,7 +9,7 @@ PrusaSlicer is the source of truth. Profiles, compatibility, inheritance, slicin
 ## Requirements
 
 - Node.js 24 or newer
-- PrusaSlicer 2.9. It is found in `/Applications`, `/Applications/Original Prusa Drivers`, `~/Applications`, `Program Files\Prusa3D\PrusaSlicer`, or on `PATH`. 3.0.0-alpha14 works for all tools but four (`find_profiles`, `install_profiles`, `create_filament_preset`, `edit_project`), which refuse it; point `PRUSASLICER_PATH` at it, see [PrusaSlicer 3.0](#prusaslicer-30).
+- PrusaSlicer 2.9. It is found in `/Applications`, `/Applications/Original Prusa Drivers`, `~/Applications`, `Program Files\Prusa3D\PrusaSlicer`, or on `PATH`. 3.0.0-alpha14 works with every tool, experimentally; point `PRUSASLICER_PATH` at it, see [PrusaSlicer 3.0](#prusaslicer-30).
 - For the GUI tools, macOS or Windows.
   - On macOS, the app that runs the server needs **Screen Recording** permission, for window titles and screenshots.
   - It also needs **Files and Folders** permission to read from `~/Downloads`, `~/Documents` or `~/Desktop`.
@@ -46,6 +48,7 @@ Claude Desktop (`claude_desktop_config.json`):
 | `PRUSASLICER_DATADIR` | Use another PrusaSlicer data directory (passed as `--datadir`) | PrusaSlicer's own |
 | `PRUSASLICER_MCP_ROOTS` | Directories the server may read and write, separated by the path delimiter | anywhere |
 | `PRUSASLICER_MCP_TIMEOUT_MS` | Time limit per slice or export | 600000 |
+| `PRUSASLICER_MCP_ALLOW_POST_PROCESS` | `1` lets `slice` run post-processing scripts when asked with `allow_post_process` | off |
 | `SPOOLMAN_URL` | A Spoolman server (`http://host:7912`), or Printerials' Spoolman-compatible API by token URL. Goes before a connected Printerials account. The URL is treated as a credential: set it here only, it never appears in answers or logs | none |
 | `PRINTERIALS_URL` | Printerials: its public catalogue, and the account `connect_printerials` links | `https://printerials.com` |
 | `PRINTERIALS_TOKEN_FILE` | Keep the Printerials connection in this file (plain text, mode 0600) instead of the macOS Keychain; needed on Windows and Linux | Keychain on macOS |
@@ -97,6 +100,7 @@ These were verified against PrusaSlicer 2.9.7 on macOS, and the server is built 
 - **Post-processing scripts are off by default.**
   - A 3MF can carry a `post_process` script that PrusaSlicer runs after slicing.
   - `slice` blanks it unless `allow_post_process` is set, and `project_info` warns when a project sets one.
+  - `allow_post_process` works only when the server runs with `PRUSASLICER_MCP_ALLOW_POST_PROCESS=1`. A tool argument alone could be set by an agent misled by a downloaded file; the environment is the user's.
   - Without stdin, PrusaSlicer 2.9 asks `Continue(Y/N) ?` and does not slice.
 - **Output is staged.**
   - PrusaSlicer writes into a scratch directory next to the destination, and the result is renamed into place.
@@ -162,6 +166,7 @@ The 3.0 backend was checked against **3.0.0-alpha14 on macOS (2026-11-17 and 202
 - **Files cannot be opened in the 3.0 GUI as projects from outside** (checked with the GUI). `open -a` and Finder's "Open With" give an empty project; `--single-instance` imports into the open project as geometry, without a 3MF's settings. `open_in_prusaslicer` therefore imports models and refuses projects, saying to open them in PrusaSlicer; `edit_project` with `open: true` does the same.
 - **What is open in the 3.0 GUI.** Its window title is always the build id and it keeps no selected presets, but it writes a full 3MF of each unsaved project to `backup_projects/<instance>_<id>_<name>.3mf` on every change, and removes it once saved (seen with the GUI). `slicer_status` reports the newest as the open project, and while the GUI runs its presets count as the selection, as 2.x's GUI selection does; the answer says where they came from. A project without unsaved changes has no backup.
 - **Nothing is written into PrusaSlicer's data directory** (any version): an output there, such as G-code next to a backup of an open project, is refused. A 3MF in `backup_projects` would be offered for recovery at PrusaSlicer's next start.
+- **Post-processing scripts do not run in 3.0.0-alpha14's CLI.** With a script in the config, the CLI asks `Continue(Y/N) ?` on stdin, and without a Y it stops with no output and exit 0, even for a `--save`. Answered Y, it slices, but the script did not run (the source defines `run_post_process_scripts` and calls it nowhere). The server answers Y only to `--save`, which exports no G-code; `slice` blanks the script unless allowed, and says so when allowed on 3.0.
 - **No installed list in 3.0.** Every profile in the vendor bundles is available. `find_profiles` lists what fits, and `install_profiles` changes nothing and says so. User presets do not show in `list_printers` yet.
 
 ## Development
