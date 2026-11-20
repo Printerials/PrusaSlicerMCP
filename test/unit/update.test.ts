@@ -22,6 +22,8 @@ test("compareVersions orders releases and pre-releases", () => {
   assert.equal(compareVersions("3.0.0-alpha14", "3.0.0"), -1);
   assert.equal(compareVersions("3.0.0-alpha14", "3.0.0-alpha2"), 1);
   assert.equal(compareVersions("3.0.0-beta1", "3.0.0-alpha14"), 1);
+  assert.equal(compareVersions("2.9.7+flathub.org", "2.9.7"), 0);
+  assert.equal(compareVersions("2.9.7+flathub.org", "2.9.8"), -1);
 });
 
 test("parseBundleIndex keeps each min/max bound until the next of its kind", () => {

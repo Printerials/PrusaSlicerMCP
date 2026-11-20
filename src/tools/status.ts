@@ -49,7 +49,9 @@ export function registerStatus(server: McpServer, { slicer, account }: ToolDeps)
       return json({
         slicer: {
           version: info.help.version,
+          build: info.help.build,
           binary: info.binary.path,
+          flatpak: info.binary.flatpak?.id,
           located_by: info.binary.source,
           backend: `${info.backend.major}.x${info.backend.experimental ? " (experimental: checked against 3.0.0-alpha14 only. Settings go through a --load config, as 3.0 ignores them as options. Known alpha14 quirks, handled here: the G-code format follows the output name; the G-code header shows empty preset ids and lift settings as 0 though the G-code lifts; --info includes the origin in bounding boxes; no selected presets in its app config. See PRUSASLICER3.md)" : ""}`,
           datadir: info.datadir,

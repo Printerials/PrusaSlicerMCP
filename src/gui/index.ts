@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
+import { readdir, readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
-import type { LocatedBinary } from "../slicer/locate.ts";
+import { slicerCommand, type LocatedBinary } from "../slicer/locate.ts";
 import { activePids } from "../slicer/run.ts";
 import * as darwin from "./darwin.ts";
 import * as win32 from "./win32.ts";
@@ -24,13 +25,54 @@ export async function windowState(): Promise<WindowState> {
   } catch (error) {
     return { running: false, title: null, note: error instanceof Error ? error.message : String(error) };
   }
-  return { running: await isRunningPosix(), title: null, note: UNSUPPORTED };
+  return { running: (await isGuiRunning()) === true, title: null, note: UNSUPPORTED };
 }
 
-function isRunningPosix(): Promise<boolean> {
-  return new Promise((resolve) => {
-    execFile("pgrep", ["-f", "prusa-slicer|PrusaSlicer"], { timeout: 3000 }, (error, stdout) => resolve(!error && stdout.trim() !== ""));
-  });
+/**
+ * PrusaSlicer's actions, from --help of 2.9.7 and 3.0.0-alpha14. PrusaSlicer opens its GUI when it
+ * is given none of them; --gcodeviewer opens the G-code viewer, not the slicer.
+ */
+const CLI_ACTIONS = new Set([
+  "--export-3mf", "--export-amf", "--export-gcode", "-g", "--export-obj", "--export-sla", "--sla", "--export-stl", "--gcodeviewer",
+  "--help", "-h", "--help-fff", "--help-sla", "--info", "--save", "--slice", "-s", "--export-config-schema",
+  "--query-print-filament-profiles", "--query-print-tool-filament-profiles", "--query-printer-models",
+]);
+
+/**
+ * Whether a command line is PrusaSlicer's GUI: the program is PrusaSlicer (its binary, the Flatpak's
+ * /app/bin/prusa-slicer, an AppImage) and no action is given. Files and options such as --datadir
+ * or --single-instance may follow.
+ */
+export function isGuiCommandLine(argv: string[]): boolean {
+  if (!/^(prusa-slicer|PrusaSlicer)(-[^/]*\.AppImage)?$/.test(basename(argv[0] ?? ""))) return false;
+  return !argv.slice(1).some((arg) => CLI_ACTIONS.has(arg.split("=")[0]!) || arg.startsWith("--preset-update"));
+}
+
+/**
+ * Linux: PIDs of PrusaSlicer GUIs, from /proc/<pid>/cmdline. A name match would not do: in a
+ * Flatpak the process is called slic3r_main, its bwrap carries "prusa-slicer" in its arguments,
+ * and so does any process run from a directory named after PrusaSlicer (measured 2026-11-20).
+ * Null when /proc cannot be read.
+ */
+async function linuxGuiPids(): Promise<number[] | null> {
+  let entries: string[];
+  try {
+    entries = await readdir("/proc");
+  } catch {
+    return null;
+  }
+  const pids: number[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === process.pid || activePids.has(pid)) continue;
+    const raw = await readFile(`/proc/${pid}/cmdline`).catch(() => null);
+    if (!raw?.length) continue;
+    const argv = raw.toString("utf8").split("\0");
+    if (argv.at(-1) === "") argv.pop();
+    if (isGuiCommandLine(argv)) pids.push(pid);
+  }
+  return pids;
 }
 
 /**
@@ -39,6 +81,7 @@ function isRunningPosix(): Promise<boolean> {
  * prusa-slicer-console.exe. Null when the process list cannot be read.
  */
 export function isGuiRunning(): Promise<boolean | null> {
+  if (process.platform === "linux") return linuxGuiPids().then((pids) => (pids === null ? null : pids.length > 0));
   return new Promise((resolve) => {
     if (process.platform === "win32") {
       execFile("tasklist", ["/FI", "IMAGENAME eq prusa-slicer.exe", "/NH", "/FO", "CSV"], { timeout: 5000, windowsHide: true }, (error, stdout) =>
@@ -93,7 +136,8 @@ export function openInGui(binary: LocatedBinary, paths: string[]): Promise<void>
     });
   }
   return new Promise((resolve, reject) => {
-    const child = spawn(binary.path, ["--single-instance", ...paths], { detached: true, stdio: "ignore", windowsHide: false });
+    const command = slicerCommand(binary, ["--single-instance", ...paths], "gui");
+    const child = spawn(command.file, command.args, { detached: true, stdio: "ignore", windowsHide: false });
     child.once("error", reject);
     child.once("spawn", () => {
       child.unref();
@@ -118,7 +162,8 @@ export async function importIntoV3Gui(binary: LocatedBinary, paths: string[]): P
         execFile("open", ["-a", binary.appBundle!], { timeout: 15000 }, (error) => (error ? reject(error) : resolve())),
       );
     } else {
-      spawn(binary.path, [], { detached: true, stdio: "ignore" }).unref();
+      const command = slicerCommand(binary, [], "gui");
+      spawn(command.file, command.args, { detached: true, stdio: "ignore" }).unref();
     }
     started = true;
     for (let waited = 0; waited < 30 && !(await isGuiRunning()); waited++) await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -126,7 +171,8 @@ export async function importIntoV3Gui(binary: LocatedBinary, paths: string[]): P
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
   await new Promise<void>((resolve) => {
-    execFile(binary.path, ["--single-instance", ...paths], { timeout: 30000 }, () => resolve());
+    const command = slicerCommand(binary, ["--single-instance", ...paths], "gui");
+    execFile(command.file, command.args, { timeout: 30000 }, () => resolve());
   });
   return { started };
 }

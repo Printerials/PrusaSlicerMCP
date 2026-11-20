@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { parseHelpFff } from "../formats/help.ts";
 import { parseIniConfig, parseIniSections } from "../formats/ini.ts";
 import { EMPTY_APP_STATE, type AppState, type Backend, type ProfilesListing } from "./backend.ts";
+import { linuxConfigHome } from "./locate.ts";
 
 /** PrusaSlicer 2.x, verified against 2.9.7. */
 export const v2Backend: Backend = {
@@ -18,7 +19,7 @@ export const v2Backend: Backend = {
   infoBoundsIncludeOrigin: false,
   exportArranges: false,
 
-  defaultDatadir() {
+  defaultDatadir(binary) {
     const dir =
       process.platform === "darwin"
         ? join(homedir(), "Library", "Application Support", "PrusaSlicer")
@@ -26,7 +27,7 @@ export const v2Backend: Backend = {
           ? process.env.APPDATA
             ? join(process.env.APPDATA, "PrusaSlicer")
             : null
-          : join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "PrusaSlicer");
+          : join(linuxConfigHome(binary), "PrusaSlicer");
     return dir && existsSync(dir) ? dir : null;
   },
 

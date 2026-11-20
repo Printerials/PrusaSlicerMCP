@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { parseConfigSchema } from "../formats/help.ts";
 import type { FlatConfig } from "../formats/ini.ts";
 import { EMPTY_APP_STATE, type AppState, type Backend, type ProfilesListing } from "./backend.ts";
+import { linuxConfigHome } from "./locate.ts";
 import { checkPatched, patchSavedConfig } from "./v3-config.ts";
 
 /**
@@ -35,14 +36,14 @@ export function v3Backend(prerelease: boolean): Backend {
     infoBoundsIncludeOrigin: true,
     exportArranges: true,
 
-    defaultDatadir() {
+    defaultDatadir(binary) {
       const name = prerelease ? "PrusaSlicer3-dev" : "PrusaSlicer3";
       const base =
         process.platform === "darwin"
           ? join(homedir(), "Library", "Application Support")
           : process.platform === "win32"
             ? (process.env.APPDATA ?? null)
-            : process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+            : linuxConfigHome(binary);
       if (!base) return null;
       const dir = join(base, name);
       return existsSync(dir) ? dir : null;

@@ -36,8 +36,10 @@ export function parseBundleIndex(text: string): IndexEntry[] {
   return entries;
 }
 
-/** -1, 0 or 1. A pre-release sorts before its release; "alpha14" after "alpha2". */
+/** -1, 0 or 1. A pre-release sorts before its release; "alpha14" after "alpha2". A build ("+flathub.org") does not count. */
 export function compareVersions(a: string, b: string): number {
+  a = a.replace(/\+.*$/, "");
+  b = b.replace(/\+.*$/, "");
   const [coreA = "", preA] = splitVersion(a);
   const [coreB = "", preB] = splitVersion(b);
   const numbersA = coreA.split(".").map(Number);

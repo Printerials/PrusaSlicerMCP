@@ -4,8 +4,10 @@
  */
 
 export interface HelpInfo {
-  /** "2.9.7", "3.0.0-alpha14". */
+  /** "2.9.7", "3.0.0-alpha14". Without the build: Flathub's 2.9.7 calls itself "2.9.7+flathub.org". */
   version: string;
+  /** "flathub.org", or undefined. */
+  build?: string;
   major: number;
   minor: number;
   /** Every option name the help lists, without dashes: "export-gcode", "query-printer-models". */
@@ -45,7 +47,7 @@ export interface SettingInfo {
   aliasOf?: string;
 }
 
-const VERSION = /PrusaSlicer-(\d+)\.(\d+)\.(\d+[^\s]*)/;
+const VERSION = /PrusaSlicer-(\d+)\.(\d+)\.(\d+(?:-[0-9A-Za-z.-]+)?)(?:\+(\S+))?/;
 
 export function parseHelp(text: string): HelpInfo {
   const match = VERSION.exec(text);
@@ -54,6 +56,7 @@ export function parseHelp(text: string): HelpInfo {
   for (const opt of text.matchAll(/^ {1,2}(?:-\w, )?--([a-z0-9][a-z0-9-]*)/gm)) options.add(opt[1]!);
   return {
     version: `${match[1]}.${match[2]}.${match[3]}`,
+    build: match[4],
     major: Number(match[1]),
     minor: Number(match[2]),
     options,

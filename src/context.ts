@@ -94,12 +94,12 @@ export class SlicerContext {
   private async detect(): Promise<SlicerInfo> {
     const located = locateSlicer(this.env);
     if ("error" in located) throw new Refusal(located.error);
-    const result = await runSlicer(located.path, ["--help"], { timeoutMs: QUERY_TIMEOUT });
+    const result = await runSlicer(located, ["--help"], { timeoutMs: QUERY_TIMEOUT });
     const help = parseHelp(result.stdout + result.stderr);
     const prerelease = /alpha|beta|rc/i.test(help.version);
     const backend = help.major >= 3 ? v3Backend(prerelease) : v2Backend;
     const configured = this.env.PRUSASLICER_DATADIR ? expandHome(this.env.PRUSASLICER_DATADIR) : null;
-    const datadir = configured ?? backend.defaultDatadir();
+    const datadir = configured ?? backend.defaultDatadir(located);
     return { binary: located, help, backend, datadir, datadirExplicit: configured !== null };
   }
 
@@ -110,7 +110,7 @@ export class SlicerContext {
     if (options.datadir) full.unshift("--datadir", options.datadir);
     else if (info.datadirExplicit && info.datadir) full.unshift("--datadir", info.datadir);
     if (!full.includes("--loglevel")) full.push("--loglevel", "1");
-    return runSlicer(info.binary.path, full, { timeoutMs: QUERY_TIMEOUT, ...options });
+    return runSlicer(info.binary, full, { timeoutMs: QUERY_TIMEOUT, ...options });
   }
 
   /** Runs a --query-* command and parses its JSON. 3.0 writes it to a file: its stdout is full of log lines. */
@@ -354,7 +354,7 @@ export class SlicerContext {
   async assertOutsideDatadir(dir: string): Promise<void> {
     const info = await this.info();
     const target = resolvePath(dir);
-    const roots = [info.datadir, info.backend.defaultDatadir()].filter((root): root is string => Boolean(root)).map((root) => resolvePath(root));
+    const roots = [info.datadir, info.backend.defaultDatadir(info.binary)].filter((root): root is string => Boolean(root)).map((root) => resolvePath(root));
     if (roots.some((root) => target === root || target.startsWith(`${root}${sep}`))) {
       throw new Refusal(
         `${dir} is inside PrusaSlicer's data directory (its presets, and its backups of unsaved projects). Nothing is written there: give an output outside it.`,
@@ -365,7 +365,7 @@ export class SlicerContext {
   /** True when the GUI would use this datadir: PrusaSlicer's default one. */
   async datadirIsTheGuis(): Promise<boolean> {
     const info = await this.info();
-    const standard = info.backend.defaultDatadir();
+    const standard = info.backend.defaultDatadir(info.binary);
     return !info.datadir || !standard || resolvePath(info.datadir) === resolvePath(standard);
   }
 

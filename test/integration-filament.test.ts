@@ -1,6 +1,7 @@
 /**
  * Filament presets from Spoolman and Printerials, end to end through an MCP client, against the
- * installed PrusaSlicer, on a copy of its datadir. Spoolman and Printerials are fakes on
+ * installed PrusaSlicer, on a data directory of the test's own (or a copy of PrusaSlicer's with
+ * PRUSASLICER_TEST_DATADIR=user). Spoolman and Printerials are fakes on
  * 127.0.0.1 that answer as the real ones do (Spoolman v0.22; Printerials' slicer route as agreed
  * on 2026-11-16). Skipped without PrusaSlicer or a selected printer.
  */
@@ -14,11 +15,12 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { locateSlicer } from "../src/slicer/locate.ts";
 import { v2Backend } from "../src/slicer/v2.ts";
+import { testDatadirEnv, usesOwnDatadir, versionOf } from "./helpers/datadir.ts";
 
 const root = join(import.meta.dirname, "..");
 const located = locateSlicer();
-const datadir = v2Backend.defaultDatadir();
-const skip = "error" in located ? "PrusaSlicer not found" : !datadir ? "no PrusaSlicer datadir" : false;
+const userDatadir = "error" in located || usesOwnDatadir() ? null : v2Backend.defaultDatadir(located);
+const skip = "error" in located ? "PrusaSlicer not found" : !usesOwnDatadir() && !userDatadir ? "no PrusaSlicer datadir" : false;
 
 const TOKEN = "pra_secret_test_token";
 
@@ -67,7 +69,14 @@ describe("filament presets from Spoolman and Printerials", { skip }, () => {
   before(async () => {
     dir = await mkdtemp(join(tmpdir(), "prusaslicer-mcp-filament-"));
     await copyFile(join(root, "test", "fixtures", "cube.stl"), join(dir, "cube.stl"));
-    await cp(datadir!, join(dir, "datadir"), { recursive: true, filter: (source) => !source.endsWith(".lock") });
+    let datadirEnv: Record<string, string>;
+    if (userDatadir) {
+      await cp(userDatadir, join(dir, "datadir"), { recursive: true, filter: (source) => !source.endsWith(".lock") });
+      datadirEnv = { PRUSASLICER_DATADIR: join(dir, "datadir") };
+    } else {
+      if ("error" in located) throw new Error(located.error);
+      datadirEnv = (await testDatadirEnv(located, versionOf(located), dir)).env;
+    }
 
     fake = createServer((request, response) => {
       agents.add(request.headers["user-agent"] ?? "");
@@ -104,7 +113,7 @@ describe("filament presets from Spoolman and Printerials", { skip }, () => {
         cwd: root,
         env: {
           ...(process.env as Record<string, string>),
-          PRUSASLICER_DATADIR: join(dir, "datadir"),
+          ...datadirEnv,
           SPOOLMAN_URL: `http://127.0.0.1:${port}/spoolman/${TOKEN}`,
           PRINTERIALS_URL: `http://127.0.0.1:${port}`,
           PRINTERIALS_COUNTRY: "NL",
@@ -115,7 +124,8 @@ describe("filament presets from Spoolman and Printerials", { skip }, () => {
 
   after(async () => {
     await client?.close();
-    await new Promise((resolve) => fake?.close(resolve));
+    // fake is not there when before() failed early; close() would then never call back.
+    if (fake) await new Promise((resolve) => fake.close(resolve));
     await rm(dir, { recursive: true, force: true });
   });
 

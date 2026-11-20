@@ -19,8 +19,13 @@ test("--help: version and the options this binary accepts", async () => {
   assert.ok(!help.options.has("query-print-tool-filament-profiles"));
 });
 
-test("--help: prerelease versions", () => {
+test("--help: prerelease versions, and a build apart from the version", () => {
   assert.equal(parseHelp("PrusaSlicer-3.0.0-alpha14 based on Slic3r").version, "3.0.0-alpha14");
+  // Flathub's 2.9.7 (measured 2026-11-20).
+  const flathub = parseHelp("PrusaSlicer-2.9.7+flathub.org based on Slic3r (with GUI support)");
+  assert.equal(flathub.version, "2.9.7");
+  assert.equal(flathub.build, "flathub.org");
+  assert.equal(parseHelp("PrusaSlicer-2.9.7 based on Slic3r").build, undefined);
 });
 
 test("--help-fff: catalogue with types, units, values and defaults", async () => {

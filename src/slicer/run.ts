@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { slicerCommand, type LocatedBinary } from "./locate.ts";
 
 export interface RunOptions {
   timeoutMs?: number;
@@ -29,13 +30,14 @@ const PROGRESS_LINE = /^(\d{1,3}) => (.+)$/;
  * spaces or quotes need no escaping. The exit code is reported but not trusted: several CLI
  * failures in 2.9 and 3.0 exit with 0, so callers check for the output they expect.
  */
-export function runSlicer(binary: string, args: string[], options: RunOptions = {}): Promise<RunResult> {
+export function runSlicer(binary: LocatedBinary, args: string[], options: RunOptions = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     // --loglevel takes effect only after a few lines are logged; SLIC3R_LOGLEVEL holds from the
     // start (3.0.0-alpha14 printed two [info] lines on stdout otherwise).
     const level = args[args.lastIndexOf("--loglevel") + 1];
     const env = args.includes("--loglevel") && level ? { ...process.env, SLIC3R_LOGLEVEL: level } : process.env;
-    const child = spawn(binary, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env });
+    const command = slicerCommand(binary, args);
+    const child = spawn(command.file, command.args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env });
     const pid = child.pid;
     if (pid !== undefined) activePids.add(pid);
     const out: Buffer[] = [];

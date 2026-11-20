@@ -9,7 +9,7 @@ PrusaSlicer is the source of truth. Profiles, compatibility, inheritance, slicin
 ## Requirements
 
 - Node.js 24 or newer
-- PrusaSlicer 2.9. It is found in `/Applications`, `/Applications/Original Prusa Drivers`, `~/Applications`, `Program Files\Prusa3D\PrusaSlicer`, or on `PATH`. 3.0.0-alpha14 works with every tool, experimentally; point `PRUSASLICER_PATH` at it, see [PrusaSlicer 3.0](#prusaslicer-30).
+- PrusaSlicer 2.9. It is found in `/Applications`, `/Applications/Original Prusa Drivers`, `~/Applications`, `Program Files\Prusa3D\PrusaSlicer`, on `PATH`, or on Linux as Flathub's Flatpak `com.prusa3d.PrusaSlicer` (see [Linux](#linux)). 3.0.0-alpha14 works with every tool, experimentally; point `PRUSASLICER_PATH` at it, see [PrusaSlicer 3.0](#prusaslicer-30).
 - For the GUI tools, macOS or Windows.
   - On macOS, the app that runs the server needs **Screen Recording** permission, for window titles and screenshots.
   - It also needs **Files and Folders** permission to read from `~/Downloads`, `~/Documents` or `~/Desktop`.
@@ -44,7 +44,7 @@ Claude Desktop (`claude_desktop_config.json`):
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `PRUSASLICER_PATH` | The `.app` bundle, `prusa-slicer-console.exe`, or the binary | auto-detected |
+| `PRUSASLICER_PATH` | The `.app` bundle, `prusa-slicer-console.exe`, the binary, or `com.prusa3d.PrusaSlicer` for the Flatpak | auto-detected |
 | `PRUSASLICER_DATADIR` | Use another PrusaSlicer data directory (passed as `--datadir`) | PrusaSlicer's own |
 | `PRUSASLICER_MCP_ROOTS` | Directories the server may read and write, separated by the path delimiter | anywhere |
 | `PRUSASLICER_MCP_TIMEOUT_MS` | Time limit per slice or export | 600000 |
@@ -142,6 +142,19 @@ These were verified against PrusaSlicer 2.9.7 on macOS, and the server is built 
   - Handing PrusaSlicer a 3MF with a PNG in it instead was measured and dropped: 2.9 does not arrange a 3MF when slicing (its positions count as meant), and its `--export-3mf` does not arrange either, so the model would have landed elsewhere on the bed.
 - **Several input files give several G-code files.** Without `--merge`, 2.9.7 and 3.0.0-alpha14 slice each input to a G-code of its own. `slice` returns one, so it refuses several inputs without `transforms.merge`. 2.9.7's `--merge` crashes (exit 139), also with one file and for `--export-stl`; 3.0 merges.
 
+## Linux
+
+Prusa ships 2.9.7 for Linux as a Flatpak on Flathub only; there is no AppImage on GitHub for it, and 3.0.0-alpha14 has no Linux build at all. The server takes a `prusa-slicer` on `PATH` first, then the Flatpak, per user or system-wide. Measured with Flathub's 2.9.7 on aarch64 (2026-11-20):
+
+- **The CLI runs `prusa-slicer` in the sandbox itself** (`flatpak run --command=prusa-slicer`). The app's own command is a script that starts PrusaSlicer in the background and prints a banner first, so its output and exit code are not PrusaSlicer's. The GUI goes through that script, as the desktop file does.
+- **The sandbox sees the home directory only, and has a `/tmp` of its own.** A model in `/tmp` gave "No such file". Every directory outside home that a run names (an input, an output, the server's own temporary files in `/tmp`) is added for that run with `--filesystem`. A path with `:` cannot be added that way.
+- **Its data directory is `~/.var/app/com.prusa3d.PrusaSlicer/config/PrusaSlicer`,** not `~/.config/PrusaSlicer`.
+- **It calls itself `2.9.7+flathub.org`.** The server reports `2.9.7` with `build: flathub.org`, and compares versions without the build.
+- **Its process is called `slic3r_main`,** and the sandbox's `bwrap` carries `prusa-slicer` in its arguments. The server tells the GUI apart by its command line in `/proc`: PrusaSlicer without one of its actions (`--export-gcode`, `--info`, ...). A name match would also have counted the server's own runs, and any process run from a directory called PrusaSlicerMCP.
+- **Not tested on Linux:** the GUI tools. `screenshot_prusaslicer` is macOS and Windows only; `open_in_prusaslicer` sends files with `--single-instance`, untried without a display.
+
+`test/linux/run.sh` runs the unit and integration tests in Docker against Flathub's PrusaSlicer.
+
 ## PrusaSlicer 3.0
 
 3.0 changes more than options:
@@ -187,11 +200,12 @@ npm test                  # unit tests, no PrusaSlicer needed
 npm run test:integration  # end to end through an MCP client against the installed PrusaSlicer
 ```
 
-The integration tests write only to a temporary directory and do not open anything in the GUI. The fixtures in `test/fixtures` were made with PrusaSlicer 2.9.7: a 20 mm cube, the same cube at 25% sliced for a CORE One, and the output of `--help`, `--help-fff` and `--info`; `test/fixtures/3.0.0-alpha14` was made with that alpha.
+The integration tests write only to a temporary directory and do not open anything in the GUI. They run on a data directory of their own (`test/helpers/datadir.ts`), so they do not depend on how PrusaSlicer is set up here: 2.x gets the PrusaResearch bundle it ships and a CORE One HF0.4 enabled (with an empty one every call fails with "Configuration wasn't found", exit 0); 3.x fills an empty one itself. `PRUSASLICER_TEST_DATADIR=user` runs them on PrusaSlicer's own data directory instead. The fixtures in `test/fixtures` were made with PrusaSlicer 2.9.7: a 20 mm cube, the same cube at 25% sliced for a CORE One, and the output of `--help`, `--help-fff` and `--info`; `test/fixtures/3.0.0-alpha14` was made with that alpha.
 
 - **Against 3.0:** `PRUSASLICER_PATH=/Applications/PrusaSlicer-3.0.0-alpha14.app npm run test:integration` runs `test/integration-v3.test.ts` and the rest against 3.0 (the 2.x-only tests skip).
 - **Both, compared:** with `PRUSASLICER_PATH_3` set to the 3.0 app, `test/integration-benchy.test.ts` slices a 3DBenchy with both versions and compares filament, time and lifts.
 - **3DBenchy** ([CreativeTools/3DBenchy](https://github.com/CreativeTools/3DBenchy), public domain under CC0 since February 2025) is not in the repository: 11 MB. The test downloads `Single-part/3DBenchy.stl` once, checks its SHA-256 and caches it in `~/Library/Caches/PrusaSlicerMCP/test-models` (`PRUSASLICER_MCP_TEST_CACHE` to put it elsewhere). Offline and without the cache, those tests skip.
+- **On Linux:** `test/linux/run.sh` builds an Ubuntu 24.04 image with Flathub's PrusaSlicer and Node, copies in the files git tracks, and runs `npm test` and `npm run test:integration` (or the command given). The container runs `--privileged`, which Flatpak's sandbox needs inside Docker, and starts the system and session bus a desktop would have.
 - **Keep the Mac awake** for the integration tests (`caffeinate -i npm run test:integration`). In sleep the clock runs on, and every PrusaSlicer call that was running hits its 60 s limit on waking.
 
 ## License

@@ -1,7 +1,8 @@
 /**
  * End to end against the PrusaSlicer installed on this machine, through a real MCP client over
- * stdio. Skipped when PrusaSlicer is not found or has no printer selected. Writes only to a
- * temporary directory; the GUI is not touched (open_in_prusaslicer is left out on purpose).
+ * stdio. Skipped when PrusaSlicer is not found. Runs on a data directory of its own
+ * (test/helpers/datadir.ts) and writes only to a temporary directory; the GUI is not touched
+ * (open_in_prusaslicer is left out on purpose).
  */
 import assert from "node:assert/strict";
 import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -11,7 +12,8 @@ import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { locateSlicer } from "../src/slicer/locate.ts";
+import { locateSlicer, type LocatedBinary } from "../src/slicer/locate.ts";
+import { testDatadirEnv, versionOf } from "./helpers/datadir.ts";
 import { writeZip } from "./helpers/zip.ts";
 
 const root = join(import.meta.dirname, "..");
@@ -31,6 +33,7 @@ describe("against the installed PrusaSlicer", { skip }, () => {
   let printer: string;
   let prints: string[];
   let filament: string;
+  let serverEnv: Record<string, string>;
 
   const call = async (name: string, args: Record<string, unknown> = {}): Promise<ToolResult> => {
     const result = await client.callTool({ name, arguments: args });
@@ -48,11 +51,11 @@ describe("against the installed PrusaSlicer", { skip }, () => {
   before(async () => {
     dir = await mkdtemp(join(tmpdir(), "prusaslicer-mcp-it-"));
     await copyFile(join(root, "test", "fixtures", "cube.stl"), join(dir, "cube.stl"));
+    const binary = located as LocatedBinary;
+    // The whole environment, so PRUSASLICER_PATH reaches the server: by default the transport passes only a few variables.
+    serverEnv = { ...(process.env as Record<string, string>), ...(await testDatadirEnv(binary, versionOf(binary), dir)).env };
     client = new Client({ name: "integration-test", version: "0" });
-    await client.connect(
-      // The whole environment, so PRUSASLICER_PATH reaches the server: by default the transport passes only a few variables.
-      new StdioClientTransport({ command: process.execPath, args: [join(root, "src", "index.ts")], stderr: "ignore", cwd: root, env: process.env as Record<string, string> }),
-    );
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(root, "src", "index.ts")], stderr: "ignore", cwd: root, env: serverEnv }));
   });
 
   after(async () => {
@@ -95,11 +98,13 @@ describe("against the installed PrusaSlicer", { skip }, () => {
     const status = await call("slicer_status");
     assert.equal(status.isError, false, status.text);
     assert.match(status.data.slicer.version, /^\d+\.\d+\.\d+/);
-    printer = status.data.selected_presets.printer;
-    if (!printer) return t.skip("no printer selected in PrusaSlicer");
-
     const printers = await call("list_printers");
     assert.ok(printers.data.models.length > 0);
+    // 2.x: the selection in the data directory. 3.x keeps none outside an unsaved GUI project, so
+    // the CORE One is taken from the list.
+    const names: string[] = printers.data.models.flatMap((m: any) => m.variants.flatMap((v: any) => v.presets.map((p: any) => p.name)));
+    printer = status.data.selected_presets.printer ?? names.find((name) => /^Prusa CORE One (HF0\.4 nozzle|& One\+ 0\.4 HF)$/.test(name));
+    if (!printer) return t.skip("no printer selected and no CORE One HF0.4");
 
     const profiles = await call("list_profiles", { printer });
     assert.equal(profiles.isError, false, profiles.text);
@@ -215,7 +220,7 @@ describe("against the installed PrusaSlicer", { skip }, () => {
         args: [join(root, "src", "index.ts")],
         stderr: "ignore",
         cwd: root,
-        env: { ...(process.env as Record<string, string>), PRUSASLICER_MCP_ALLOW_POST_PROCESS: "1" },
+        env: { ...serverEnv, PRUSASLICER_MCP_ALLOW_POST_PROCESS: "1" },
       }),
     );
     try {
@@ -280,7 +285,7 @@ describe("against the installed PrusaSlicer", { skip }, () => {
         args: [join(root, "src", "index.ts")],
         stderr: "ignore",
         cwd: root,
-        env: { ...(process.env as Record<string, string>), PRUSASLICER_DATADIR: copy },
+        env: { ...serverEnv, PRUSASLICER_DATADIR: copy },
       }),
     );
     const callCopy = async (name: string, args: Record<string, unknown>) => {

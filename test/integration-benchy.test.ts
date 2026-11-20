@@ -8,7 +8,6 @@
  * 52m35s, 3.0.0-alpha14 11.13 g and 52m41s, with the same travel lifts.
  */
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +19,8 @@ import { analyzeAsciiGcode } from "../src/formats/gcode-ascii.ts";
 import { checkBgcode } from "../src/formats/gcode-thumbnails.ts";
 import { encodePng, encodeQoi } from "../src/formats/image.ts";
 import { ZipReader } from "../src/formats/zip.ts";
-import { locateSlicer } from "../src/slicer/locate.ts";
+import { locateSlicer, type LocatedBinary } from "../src/slicer/locate.ts";
+import { testDatadirEnv, versionOf } from "./helpers/datadir.ts";
 import { decodePng, decodeQoi } from "./helpers/images.ts";
 import { benchy, liftedMoves, lifts, movedStl } from "./helpers/models.ts";
 import { writeZip } from "./helpers/zip.ts";
@@ -30,22 +30,19 @@ const CORE_ONE_THUMBNAILS = ["16x16/QOI", "313x173/QOI", "480x240/QOI", "380x285
 type Thumb = { width: number; height: number; format: string };
 
 interface Target {
-  path: string;
+  located: LocatedBinary;
   version: string;
-}
-
-function versionOf(path: string): string {
-  const result = spawnSync(path, ["--version"], { encoding: "utf8", timeout: 20_000 });
-  return /(\d+\.\d+\.\d+\S*)/.exec(`${result.stdout ?? ""}${result.stderr ?? ""}`)?.[1] ?? "";
+  /** What the server gets to find this PrusaSlicer: PRUSASLICER_PATH as given, or nothing for the auto-detected one. */
+  env: Record<string, string>;
 }
 
 const targets: Target[] = [];
 for (const env of [process.env, process.env.PRUSASLICER_PATH_3 ? { PRUSASLICER_PATH: process.env.PRUSASLICER_PATH_3 } : null]) {
   if (!env) continue;
   const located = locateSlicer(env as NodeJS.ProcessEnv);
-  if ("error" in located || targets.some((target) => target.path === located.path)) continue;
-  const version = versionOf(located.path);
-  if (version) targets.push({ path: located.path, version });
+  if ("error" in located || targets.some((target) => target.located.path === located.path && target.located.flatpak?.id === located.flatpak?.id)) continue;
+  const version = versionOf(located);
+  if (version) targets.push({ located, version, env: env.PRUSASLICER_PATH ? { PRUSASLICER_PATH: env.PRUSASLICER_PATH } : {} });
 }
 
 const model = await benchy();
@@ -53,6 +50,8 @@ const skip = "skip" in model ? model.skip : targets.length === 0 ? "PrusaSlicer 
 
 /** What each version made of the same Benchy, for the comparison at the end. */
 const sliced = new Map<string, { grams: number; seconds: number; lifts: number }>();
+/** The profiles each version's data directory got (test/helpers/datadir.ts). */
+const profilesUsed = new Map<string, string | null>();
 
 for (const target of targets) {
   describe(`3DBenchy with PrusaSlicer ${target.version}`, { skip }, () => {
@@ -77,6 +76,8 @@ for (const target of targets) {
       dir = await mkdtemp(join(tmpdir(), "prusaslicer-mcp-benchy-"));
       input = join(dir, "3DBenchy.stl");
       await copyFile((model as { path: string }).path, input);
+      const datadir = await testDatadirEnv(target.located, target.version, dir);
+      profilesUsed.set(target.version, datadir.profiles);
       client = new Client({ name: "integration-benchy", version: "0" });
       await client.connect(
         new StdioClientTransport({
@@ -84,7 +85,7 @@ for (const target of targets) {
           args: [join(root, "src", "index.ts")],
           stderr: "ignore",
           cwd: root,
-          env: { ...(process.env as Record<string, string>), PRUSASLICER_PATH: target.path },
+          env: { ...(process.env as Record<string, string>), ...target.env, ...datadir.env },
         }),
       );
     });
@@ -269,6 +270,9 @@ describe("3DBenchy: 2.x and 3.x give the same print", { skip: skip || (new Set(t
   test("filament, time and lifts within a few percent", (t) => {
     const results = [...sliced.entries()];
     if (results.length < 2) return t.skip("one of the slices did not run");
+    // 2.9.7's own bundle (2.4.14) is older than what an updated 2.9 and 3.0 slice with.
+    const older = [...profilesUsed.values()].find((profiles) => profiles?.includes("shipped"));
+    if (older) return t.skip(`2.x ran on ${older}; the comparison needs the bundle an updated 2.9 has`);
     const [versionA, a] = results[0]!;
     const [versionB, b] = results[1]!;
     const within = (x: number, y: number, share: number) => Math.abs(x - y) <= share * Math.max(x, y);

@@ -1,5 +1,6 @@
 import type { SettingInfo } from "../formats/help.ts";
 import type { FlatConfig } from "../formats/ini.ts";
+import type { LocatedBinary } from "./locate.ts";
 import type { PatchResult } from "./v3-config.ts";
 import type { AppliedCheck } from "./verify.ts";
 import type { OpenProject } from "./v3-userdata.ts";
@@ -30,8 +31,8 @@ export interface Backend {
   patchConfig: ((savedConfig: string, changes: ReadonlyMap<string, string>, catalog: ReadonlyMap<string, SettingInfo>) => PatchResult) | null;
   /** With patchConfig: what PrusaSlicer saved back after loading the patched config, against what was written. */
   checkPatched: ((loadedConfig: string, targets: PatchResult["targets"]) => AppliedCheck) | null;
-  /** Where PrusaSlicer keeps presets and its app config, or null when it is not there. */
-  defaultDatadir(): string | null;
+  /** Where this PrusaSlicer keeps presets and its app config, or null when it is not there. */
+  defaultDatadir(binary: LocatedBinary): string | null;
   /** Arguments that list the print and filament profiles compatible with a printer, as JSON. */
   profilesQueryArgs(printer: string): string[];
   parseProfilesQuery(json: unknown): ProfilesListing;

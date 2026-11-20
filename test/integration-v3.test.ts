@@ -5,28 +5,24 @@
  * an error: these tests would fail if the server went back to passing them that way.
  */
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { copyFile, cp, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { locateSlicer } from "../src/slicer/locate.ts";
+import { locateSlicer, type LocatedBinary } from "../src/slicer/locate.ts";
+import { testDatadirEnv, versionOf } from "./helpers/datadir.ts";
 import { ZipReader } from "../src/formats/zip.ts";
 import { writeZip } from "./helpers/zip.ts";
 import { lifts } from "./helpers/models.ts";
+import { compareVersions, newestFor, parseBundleIndex } from "../src/slicer/bundle-index.ts";
 
 const root = join(import.meta.dirname, "..");
 const located = locateSlicer();
 
-function versionOf(path: string): string {
-  // The version goes to stderr in some builds, to stdout in others.
-  const result = spawnSync(path, ["--version"], { encoding: "utf8", timeout: 20_000 });
-  return `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
-}
-
-const skip = "error" in located ? "PrusaSlicer not found" : /(^|\n)3\./.test(versionOf(located.path)) ? false : "the located PrusaSlicer is not 3.x";
+const version = "error" in located ? "" : versionOf(located);
+const skip = "error" in located ? "PrusaSlicer not found" : /^3\./.test(version) ? false : "the located PrusaSlicer is not 3.x";
 
 describe("against PrusaSlicer 3.x", { skip }, () => {
   let client: Client;
@@ -34,6 +30,7 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
   let printer: string;
   let print: string;
   let filament: string;
+  let serverEnv: Record<string, string>;
 
   const call = async (name: string, args: Record<string, unknown> = {}) => {
     const result = await client.callTool({ name, arguments: args });
@@ -52,8 +49,9 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
   before(async () => {
     dir = await mkdtemp(join(tmpdir(), "prusaslicer-mcp-it3-"));
     await copyFile(join(root, "test", "fixtures", "cube.stl"), join(dir, "cube.stl"));
+    serverEnv = { ...(process.env as Record<string, string>), ...(await testDatadirEnv(located as LocatedBinary, version, dir)).env };
     client = new Client({ name: "integration-test-3", version: "0" });
-    await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(root, "src", "index.ts")], stderr: "ignore", cwd: root, env: process.env as Record<string, string> }));
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(root, "src", "index.ts")], stderr: "ignore", cwd: root, env: serverEnv }));
   });
 
   after(async () => {
@@ -217,7 +215,7 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
         args: [join(root, "src", "index.ts")],
         stderr: "ignore",
         cwd: root,
-        env: { ...(process.env as Record<string, string>), PRUSASLICER_DATADIR: copy },
+        env: { ...serverEnv, PRUSASLICER_DATADIR: copy },
       }),
     );
     const callCopy = async (name: string, args: Record<string, unknown>) => {
@@ -285,15 +283,9 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
     if (!online) return t.skip("Prusa's preset repository cannot be reached");
     const copy = join(dir, "datadir-update");
     await cp(datadir, copy, { recursive: true, filter: (source) => !source.endsWith(".lock") && !source.includes("backup_projects") });
-    // Set the Prusa bundle back one version, as if it were not updated yet.
     const vendorFile = join(copy, "presets", "local", "prusa-research-fff", "PrusaResearch", "vendor.yaml");
     const vendor = await readFile(vendorFile, "utf8").catch(() => null);
-    const current = vendor && /^version: (\S+)$/m.exec(vendor)?.[1];
-    if (!vendor || !current) return t.skip("no local Prusa FFF bundle");
-    const versions = [...(await readFile(join(copy, "presets", "local", "prusa-research-fff", "PrusaResearch.idx"), "utf8")).matchAll(/^(\d+\.\d+\.\d+)\s/gm)].map((m) => m[1]!);
-    const older = versions[versions.indexOf(current) + 1];
-    if (!older) return t.skip("no older bundle version in the index");
-    await writeFile(vendorFile, vendor.replace(/^version: \S+$/m, `version: ${older}`));
+    if (!vendor || !/^version: \S+$/m.test(vendor)) return t.skip("no local Prusa FFF bundle");
 
     const other = new Client({ name: "integration-test-3-update", version: "0" });
     await other.connect(
@@ -302,7 +294,7 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
         args: [join(root, "src", "index.ts")],
         stderr: "ignore",
         cwd: root,
-        env: { ...(process.env as Record<string, string>), PRUSASLICER_DATADIR: copy },
+        env: { ...serverEnv, PRUSASLICER_DATADIR: copy },
       }),
     );
     const callCopy = async (name: string, args: Record<string, unknown>) => {
@@ -310,12 +302,26 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
       const text = (result.content as Array<{ type: string; text?: string }>).map((part) => part.text ?? "").join("\n");
       return { isError: Boolean(result.isError), text, data: result.isError ? null : JSON.parse(text) };
     };
+    const prusaUpdate = (check: { data: any }) => check.data.regular_updates?.find((entry: { vendor: string }) => entry.vendor === "PrusaResearch");
     try {
-      const check = await callCopy("update_profiles", {});
+      let check = await callCopy("update_profiles", {});
       assert.equal(check.isError, false, check.text);
+      // A fresh data directory has the bundle 3.0 ships (1.0.22 in alpha14, with 1.0.25
+      // recommended). An updated one is set back to the newest older version this PrusaSlicer may
+      // use: an older one can be for another alpha, and is then a forced update.
+      if (!prusaUpdate(check)) {
+        const current = /^version: (\S+)$/m.exec(vendor)![1]!;
+        const index = parseBundleIndex(await readFile(join(copy, "presets", "local", "prusa-research-fff", "PrusaResearch.idx"), "utf8"));
+        const older = index.filter((entry) => compareVersions(entry.version, current) < 0);
+        const back = newestFor(older, status.data.slicer.version);
+        if (!back) return t.skip("no older bundle version for this PrusaSlicer in the index");
+        await writeFile(vendorFile, vendor.replace(/^version: \S+$/m, `version: ${back.version}`));
+        check = await callCopy("update_profiles", {});
+      }
       assert.equal(check.data.up_to_date, false);
-      const prusa = check.data.regular_updates.find((entry: { vendor: string }) => entry.vendor === "PrusaResearch");
-      assert.deepEqual([prusa.installed, prusa.recommended], [older, current]);
+      const prusa = prusaUpdate(check);
+      assert.ok(prusa, JSON.stringify(check.data));
+      const [older, current] = [prusa.installed as string, prusa.recommended as string];
 
       const installed = await callCopy("update_profiles", { install: true });
       assert.equal(installed.isError, false, installed.text);
