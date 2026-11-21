@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import { readProject } from "../../src/formats/threemf.ts";
 import {
   bedOrigins2x,
   customGcodesForEveryBed,
@@ -11,6 +15,7 @@ import {
   parseBedShape,
   swapBedData,
   wipeTowerForEveryBed,
+  writeBedCopy,
 } from "../../src/formats/beds.ts";
 import { within } from "../../src/tools/thumbnails.ts";
 
@@ -127,4 +132,35 @@ test("3.0: two beds change everything but their position", () => {
 test("within keeps the triangles that lie on the bed", () => {
   const triangles = Float32Array.from([0, 0, 0, 10, 0, 0, 0, 10, 0, 300, 0, 0, 310, 0, 0, 300, 10, 0]);
   assert.deepEqual([...within(triangles, { minX: 0, maxX: 250, minY: 0, maxY: 220 })], [0, 0, 0, 10, 0, 0, 0, 10, 0]);
+});
+
+// Made with the PrusaSlicer 2.9.7 GUI on 2026-11-21: a 140 mm and a 120 mm cube, arranged onto two
+// beds of a CORE One HF0.4, with a colour change at 55.08 mm on bed 2. Sliced there, bed 2 took
+// 408.14 g and 6h46m.
+const GUI_PROJECT = join(import.meta.dirname, "..", "fixtures", "beds-2.9.7.3mf");
+
+test("a 2.9.7 GUI project with two beds: the beds as the GUI laid them out, and the colour change on bed 2", async () => {
+  const project = await readProject(GUI_PROJECT);
+  assert.equal(project.kind, "prusaslicer-2");
+  assert.deepEqual(project.beds!.beds.map((bed) => bed.items.map((item) => item.name)), [["cube-140.stl"], ["cube-120.stl"]]);
+  assert.deepEqual(project.beds!.outside, []);
+  assert.deepEqual(project.custom_gcodes.map((code) => [code.bed, code.type, Math.round(code.print_z * 100) / 100]), [[2, "color_change", 55.08]]);
+});
+
+test("copies of that project: each bed first, with that bed's colour changes on every bed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "psmcp-beds-"));
+  try {
+    const project = await readProject(GUI_PROJECT);
+    await writeBedCopy(GUI_PROJECT, join(dir, "bed1.3mf"), project.beds!, 1);
+    await writeBedCopy(GUI_PROJECT, join(dir, "bed2.3mf"), project.beds!, 2);
+    const first = await readProject(join(dir, "bed1.3mf"));
+    const second = await readProject(join(dir, "bed2.3mf"));
+    assert.deepEqual(first.beds!.beds.map((bed) => bed.items.map((item) => item.name)), [["cube-140.stl"], ["cube-120.stl"]]);
+    assert.deepEqual(first.custom_gcodes, [], "bed 1 has no colour change; 2.9.7's CLI would have given it bed 2's");
+    assert.deepEqual(second.beds!.beds.map((bed) => bed.items.map((item) => item.name)), [["cube-120.stl"], ["cube-140.stl"]]);
+    assert.deepEqual(second.custom_gcodes.map((code) => [code.bed, code.type]), [[1, "color_change"], [2, "color_change"]]);
+    assert.equal(second.thumbnail, null, "the project's thumbnail shows bed 1");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

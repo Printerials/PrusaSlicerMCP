@@ -35,6 +35,7 @@ describe("against the installed PrusaSlicer", { skip }, () => {
   let prints: string[];
   let filament: string;
   let serverEnv: Record<string, string>;
+  let profiles: string | null = null;
 
   const call = async (name: string, args: Record<string, unknown> = {}): Promise<ToolResult> => {
     const result = await client.callTool({ name, arguments: args });
@@ -54,7 +55,9 @@ describe("against the installed PrusaSlicer", { skip }, () => {
     await copyFile(join(root, "test", "fixtures", "cube.stl"), join(dir, "cube.stl"));
     const binary = located as LocatedBinary;
     // The whole environment, so PRUSASLICER_PATH reaches the server: by default the transport passes only a few variables.
-    serverEnv = { ...(process.env as Record<string, string>), ...(await testDatadirEnv(binary, versionOf(binary), dir)).env };
+    const datadir = await testDatadirEnv(binary, versionOf(binary), dir);
+    profiles = datadir.profiles;
+    serverEnv = { ...(process.env as Record<string, string>), ...datadir.env };
     client = new Client({ name: "integration-test", version: "0" });
     await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(root, "src", "index.ts")], stderr: "ignore", cwd: root, env: serverEnv }));
   });
@@ -434,6 +437,29 @@ describe("against the installed PrusaSlicer", { skip }, () => {
       assert.equal(events[0]!.kind, "pause");
       assert.ok(Math.abs(events[0]!.z - pauseZ) < 0.3, `bed ${bed}: pause at ${events[0]!.z} mm, expected ${pauseZ}`);
     }
+  });
+
+  test("a project the 2.9.7 GUI made on two beds: each bed sliced as the GUI sliced it", async () => {
+    // test/fixtures/beds-2.9.7.3mf: a 140 mm cube on bed 1, a 120 mm cube on bed 2 with a colour
+    // change at 55.08 mm. The GUI gave bed 2 408.14 g and 6h46m; 2.9.7's CLI alone gives bed 1
+    // that colour change.
+    const project = join(dir, "gui-beds.3mf");
+    await copyFile(join(root, "test", "fixtures", "beds-2.9.7.3mf"), project);
+    const colourChanges = async (output: string) =>
+      ((await call("gcode_info", { path: output })).data.events as Array<{ kind: string; z: number }>).filter((event) => event.kind === "color_change");
+
+    const second = await call("slice", { inputs: [project], gcode_format: "ascii", bed: 2 });
+    assert.equal(second.isError, false, second.text);
+    assert.deepEqual((await colourChanges(second.data.output)).map((event) => Math.round(event.z * 100) / 100), [55.08]);
+    // The GUI's numbers hold with the bundle an updated 2.9 has, not with the older one 2.9.7 ships.
+    if (!profiles?.includes("shipped")) {
+      const grams = second.data.result.filament.total_g as number;
+      assert.ok(Math.abs(grams - 408.14) / 408.14 < 0.01, `bed 2 took ${grams} g; the GUI said 408.14 g`);
+    }
+
+    const first = await call("slice", { inputs: [project], gcode_format: "ascii", bed: 1 });
+    assert.equal(first.isError, false, first.text);
+    assert.deepEqual(await colourChanges(first.data.output), [], "bed 2's colour change ended up on bed 1");
   });
 
   test("model_info and export_model", async () => {

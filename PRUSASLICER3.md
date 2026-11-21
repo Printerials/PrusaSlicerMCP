@@ -85,7 +85,7 @@ Paths in source references are relative to `src/` of that checkout. Where the se
   - In `preset`, `hw_config.config_name` is the printer profile, `print.name` the print preset and `materials[].name` the filaments; `preset.printer.name` is the printer model.
 - **Painting** (seams, supports, colours) is in `Metadata/Slic3r_facets_annotation.json`, and colour changes are in `config_containers[i].beds[j].custom_gcode.gcodes[]`. (source `Format/3mf/PrusaFile.cpp:641-918, 1664-1678`)
 - **Per-object, per-volume and per-range settings** (`objects[n].object_settings`, `volumes[m].volume_settings`, `ranges[k].configuration`) are flat overrides that win over the project config for that part. `configuration.macro_overrides` holds print modes such as vase mode. (source `ConfigLoad.cpp:211-222, 284-327`)
-- **No dirty flag.** A preset whose stored values differ from the installed preset opens as a separate preset "(From 3mf) <name>", not as a modified one. (source `PresetInteractor.cpp:3716-3871`)
+- **No dirty flag.** A preset whose stored values differ from the installed preset opens as a separate preset "(From 3mf) <name>", not as a modified one. A project that `edit_project` switched to "0.15mm SPEED @COREONE 0.4HF" with 33 % infill opened with print preset "(From 3mf) 0.15mm SPEED …" and fill density 33 %; its filament showed as "(From 3mf) Prusament PLA" too, as its stored values were those of the bundle the CLI ships rather than the installed one; the printer kept its plain name. (measured with the GUI, 2026-11-21; source `PresetInteractor.cpp:3716-3871`)
 - **A 2.x project opens with its presets and values.** A 2.9.7 project for a CORE One HF0.4 became printer "Prusa CORE One & One+ 0.4 HF", with its own print, filament, layer height and infill. The source says legacy projects are not supported; the binary loads them. (measured)
 - **A 3MF written by `--export-3mf`** carries the `--load` config in its `config_containers`, but no thumbnail. (measured; source `3mf.cpp:800-821`)
 
@@ -120,6 +120,7 @@ Paths in source references are relative to `src/` of that checkout. Where the se
   - `PrusaSlicer --single-instance <file>` reaches the running GUI. It prints "Failed to create a lockfile" and exits 1, yet the file is imported into the current project, placed on the bed, as geometry only: a 3MF's settings do not come along.
   - Only the GUI's own Open project loads a 3MF with its settings. A project edited by the server's `edit_project` opened that way with its new values.
   - So `open_in_prusaslicer` imports models through `--single-instance`, and refuses projects with that reason instead of reporting them opened.
+  - With 3.0 closed, the server starts it, waits for the process and five seconds more, and sends the files: a cube arrived in the new project, 5.5 s after the call. (measured with the GUI, 2026-11-21)
 - **The window title is always the build id**, so it shows no project name and no unsaved-changes marker. (source `MainFrame.cpp:90`)
 - **Unsaved projects are backed up as full 3MFs** in `backup_projects/<instance>_<id>_<name>.3mf` on every change, and removed when saved. With a project open and changed in the GUI, its backup held both objects, the presets and the changed values, written at the moment of the change. (measured; source `BackupStore.cpp:64-133`) The server reads the newest as the open project and takes its presets as the selection while the GUI runs, and writes nothing into the data directory: a 3MF placed in `backup_projects` is offered for recovery at the next start (source `BackupStore.cpp:320-351`).
 - **Lua plugins** run only in the GUI, from a menu, in a sandbox with base, table, math and string; they cannot reach other processes. (source `LuaEngine.cpp:21-22`) See also the Onthoud note `prusaslicer-lua-plugins`.
@@ -136,7 +137,5 @@ Paths in source references are relative to `src/` of that checkout. Where the se
 
 ## Not known yet
 
-- Whether a 3.0 project edited by `edit_project` shows its presets as "(From 3mf) <name>" in the GUI (its values were checked, the preset names were not).
 - Whether `--load full.json --dont-arrange --export-3mf -o out.3mf in.3mf` keeps painting, ranges and colour changes.
 - Whether the warning codes other than 7 have the numbers of the source in this build.
-- Whether `--single-instance` imports into a GUI the server had to start first (the server waits for it; not tried).
