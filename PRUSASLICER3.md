@@ -40,7 +40,7 @@ Paths in source references are relative to `src/` of that checkout. Where the se
 - **A script in the config makes the CLI ask `Continue(Y/N) ?` on stdin**, after loading the inputs and `--load` and before any action. Any answer but Y (a closed stdin too) stops it with no output and exit 0, also for a plain `--save`. (measured; source `CLIApp.cpp:245`, `LoadPrintData.cpp:561-607`)
 - **Answered Y, nothing runs:** a `--save` writes the config, and an `--export-gcode` writes the G-code, but the script did not run in either case. The source defines `run_post_process_scripts` (`GCode/PostProcessor.cpp:983`) and nothing calls it. (measured)
 - A `--load` config without a script, given next to a project that has one, asks nothing: the `--load` replaces the project's config before the check. (measured)
-- The server answers Y to `--save` only (it exports no G-code), blanks the script for a slice unless the user allowed scripts, and says on 3.0 that an allowed script did not run.
+- The server answers Y to `--save` (it exports no G-code) and to a slice the user allowed scripts for, and blanks the script otherwise. An allowed slice gets its scripts run by the server, as 2.9.7's CLI runs them: each line through `$SHELL -c` with the G-code's path last, every setting as `SLIC3R_<KEY>` plus `SLIC3R_PP_HOST` and `SLIC3R_PP_OUTPUT_NAME`, in place, after the thumbnails; a failing script (non-zero exit, or the G-code gone) leaves no G-code. (`src/slicer/post-process.ts`; 2.9.7 measured 2026-11-23)
 
 ## Queries
 

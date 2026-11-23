@@ -9,6 +9,8 @@ import { readProject } from "../formats/threemf.ts";
 import { splitList } from "../formats/ini.ts";
 import { spoolLabel, spoolPricePerKg } from "../spoolman/client.ts";
 import { spoolman } from "./filament.ts";
+import { flattenConfiguration } from "../slicer/v3.ts";
+import { runPostProcess, scriptFailure, scriptsOf, type PostProcessResult } from "../slicer/post-process.ts";
 import { describeFailure } from "../slicer/run.ts";
 import type { AppliedCheck } from "../slicer/verify.ts";
 import { Refusal } from "../util/errors.ts";
@@ -76,7 +78,8 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
           .boolean()
           .default(false)
           .describe(
-            "Run the post_process scripts the presets or the project define. Works only when the user started the server with " +
+            "Run the post_process scripts the presets or the project define (2.x: PrusaSlicer runs them; 3.x, whose command line does not, " +
+              "this server runs them as 2.9 does). A failing script leaves no G-code. Works only when the user started the server with " +
               "PRUSASLICER_MCP_ALLOW_POST_PROCESS=1; otherwise the slice is refused.",
           ),
         spool_id: z.number().int().optional().describe("A spool (list_spools) to print from: checks that enough is left on it and prices the print at what it cost."),
@@ -276,6 +279,9 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
           );
         }
         if (produced.length === 0) throw new Refusal(describeFailure(run, "Slicing", args.transforms?.merge ? MERGE_CRASH : undefined));
+        // 2.9 runs the scripts itself; a failed one leaves its G-code in place and exits 1, which is not trusted.
+        const failed = args.allow_post_process ? scriptFailure(run.stderr + run.stdout) : null;
+        if (failed) throw new Refusal(`The post-processing script failed, so no G-code was kept.\n${failed}`);
         if (produced.length > 1) throw new Refusal(`PrusaSlicer wrote ${produced.length} G-code files (${produced.join(", ")}) where one was expected; none was kept.`);
         const staged = join(staging, produced[0]!);
         let thumbnails: string | undefined;
@@ -286,12 +292,25 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
             thumbnails = `none: ${error instanceof Error ? error.message.split("\n")[0] : String(error)} (the G-code is as sliced)`;
           }
         }
+        // 3.0's CLI runs no script: this server runs them as 2.9 does, on the G-code with its thumbnails.
+        let postProcess: PostProcessResult | undefined;
+        const scripts = args.allow_post_process && patchedConfig ? scriptsOf(configurationOf(patchedConfig).print_settings?.post_process) : [];
+        if (scripts.length) {
+          try {
+            postProcess = await runPostProcess(scripts, staged, flattenConfiguration(configurationOf(patchedConfig!)), {
+              timeoutMs: slicer.sliceTimeoutMs,
+              signal: ctx.mcpReq.signal,
+            });
+          } catch (error) {
+            throw new Refusal(`The post-processing script failed, so no G-code was kept.\n${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
         const sliced = projectStem ? `${projectStem}${extname(produced[0]!)}` : produced[0]!;
         // One G-code per bed: bed 2 of part.3mf becomes part-bed2.gcode.
         const name = bed?.several ? `${sliced.slice(0, -extname(sliced).length)}-bed${bed.number}${extname(sliced)}` : sliced;
         const final = fileName ? join(destDir, fileName) : args.overwrite ? join(destDir, name) : await freeName(destDir, name);
         await commitFile(staged, final, args.overwrite);
-        return { final, run, thumbnails };
+        return { final, run, thumbnails, postProcess };
       });
 
       const { report } = await readGcode(result.final);
@@ -323,10 +342,13 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
       if (beds?.outside.length) {
         messages.push(`On no bed, so PrusaSlicer left out: ${beds.outside.map((item) => item.name).join(", ")}.`);
       }
-      if (args.allow_post_process && info.backend.major >= 3) {
+      if (result.postProcess) {
         messages.push(
-          "PrusaSlicer 3.0.0-alpha14 does not run post-processing scripts from its command line (checked: the script did not run after the slice), so this G-code is as sliced.",
+          `PrusaSlicer 3.0.0-alpha14's command line runs no post-processing script, so this server ran ${result.postProcess.scripts.length === 1 ? "it" : `all ${result.postProcess.scripts.length}`} as PrusaSlicer 2.9 does, after the thumbnails: ${result.postProcess.scripts.join("; ")}.`,
         );
+        if (result.postProcess.renameAsked) {
+          messages.push(`A script asked for the output to be named "${result.postProcess.renameAsked}"; PrusaSlicer's command line does not rename, and neither does this server.`);
+        }
       }
       if (applied?.missing.length) {
         messages.push(`Not found in the config PrusaSlicer loaded, so not confirmed: ${applied.missing.join(", ")}.`);
@@ -370,6 +392,11 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
       });
     },
   );
+}
+
+/** The configuration of a config PrusaSlicer 3.x saved ({preset, configuration}). */
+function configurationOf(text: string): Record<string, Record<string, unknown>> {
+  return (JSON.parse(text) as { configuration?: Record<string, Record<string, unknown>> }).configuration ?? {};
 }
 
 /**
