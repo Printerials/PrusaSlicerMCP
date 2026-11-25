@@ -306,6 +306,8 @@ describe("against PrusaSlicer 3.x", { skip }, () => {
     try {
       let check = await callCopy("update_profiles", {});
       assert.equal(check.isError, false, check.text);
+      // PrusaSlicer's own HTTP client may not get through where node's fetch does (a proxy it does not trust).
+      if (check.data.checked === false) return t.skip(check.data.note);
       // A fresh data directory has the bundle 3.0 ships (1.0.22 in alpha14, with 1.0.25
       // recommended). An updated one is set back to the newest older version this PrusaSlicer may
       // use: an older one can be for another alpha, and is then a forced update.

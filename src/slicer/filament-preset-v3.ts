@@ -16,7 +16,9 @@ import { schemaValue, type Json } from "./v3-config.ts";
  *
  * Two ways such a file breaks PrusaSlicer, both seen on a copy: an unknown variable in the
  * condition makes almost every printer of the vendor disappear, and a parent id that does not exist
- * makes every CLI call abort (exit 134). The caller validates after writing and rolls back.
+ * made every CLI call of alpha14 abort (exit 134); alpha15 leaves that preset out instead and logs
+ * "Preset with id '…' not found" (measured 2026-11-25). The caller validates after writing (the
+ * preset must resolve) and rolls back either way.
  */
 
 interface SavedPreset {

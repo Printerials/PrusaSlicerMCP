@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { compareVersions, newestFor, parseBundleIndex } from "../../src/slicer/bundle-index.ts";
-import { parseUpdaterJson } from "../../src/tools/update.ts";
+import { parseUpdaterJson, unreachableWarnings } from "../../src/tools/update.ts";
 
 // The head of PrusaResearch.idx as 3.0.0-alpha14 keeps it (2026-11-20).
 const V3_INDEX = `min_slic3r_version = 3.0.0-alpha14
@@ -56,4 +56,15 @@ test("parseUpdaterJson reads the object after PrusaSlicer's log lines", () => {
   assert.deepEqual(parseUpdaterJson('{"error":"no network"}\n'), { error: "no network" });
   assert.equal(parseUpdaterJson(""), null);
   assert.equal(parseUpdaterJson("{ not json"), null);
+});
+
+test("unreachableWarnings picks the warnings that mean the repository was not asked (alpha14/15 behind a proxy)", () => {
+  const warnings = [
+    { repo: "", text: "Failed to download Sources Database Manifest file.", vendor: "" },
+    { repo: "prusa-research-fff", text: "Failed to check updates for source prusa-research-fff. Failed to download vendor profiles archive zip file.", vendor: "" },
+    { repo: "prusa-research-fff", text: "Some vendor changed its name.", vendor: "X" },
+  ];
+  assert.deepEqual(unreachableWarnings(warnings), [warnings[0]!.text, warnings[1]!.text]);
+  assert.deepEqual(unreachableWarnings(undefined), []);
+  assert.deepEqual(unreachableWarnings([{ text: "Some vendor changed its name." }]), []);
 });

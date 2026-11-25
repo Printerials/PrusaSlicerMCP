@@ -2,19 +2,29 @@
 
 The quirks of PrusaSlicer 3.0 that matter when you drive it through its CLI and its files, as this server does. Every point says how it is known:
 
-- **measured**: run against the 3.0.0-alpha14 binary on macOS (Apple Silicon), 17–19 November 2026.
-- **source**: read in a source checkout that calls itself 3.0.0-alpha14 in `version.inc` but is newer than the binary (it has per-setting CLI options that the binary ignores). Check a source claim against the binary before relying on it.
+- **measured**: run against the 3.0.0-alpha14 binary on macOS (Apple Silicon), 17–19 November 2026, and measured again against 3.0.0-alpha15 on 25 November 2026 (see [What changed in alpha15](#what-changed-in-alpha15)).
+- **source**: read in a source checkout. Until 25 November that was master, which called itself 3.0.0-alpha14 but was newer than that binary: it had per-setting CLI options that neither alpha14 nor alpha15 has. Since then it is the `version_3.0.0-alpha15` tag, the source of the binary. Check a source claim against the binary before relying on it.
 
 Paths in source references are relative to `src/` of that checkout. Where the server handles a quirk, the file is named.
 
+## What changed in alpha15
+
+Measured on 25 November 2026 against 3.0.0-alpha15 (89 commits after alpha14, mostly the GUI, Prusa Connect Local, painting and loading progress; none in the CLI).
+
+- **Unchanged:** settings given as options are still ignored (`--thick-bridges=1 --fill-density=33%` gave `thick_bridges = 0`, `fill_density = 15%`); the G-code header still has empty preset ids and `retract_lift`, `travel_max_lift`, `travel_ramping_lift` at 0; `--info` still includes the origin (a cube at x 115..135: `size_x = 135`); `--export-stl` still moves a lone model to the bed centre; a project on three beds still gives the first bed's G-code only, exit 0; the CLI still runs no post-processing script (`run_post_process_scripts` is still called nowhere); the bundled PrusaResearch is still 1.0.22, with 1.0.25 recommended; no Linux build. The test suites pass unchanged. (measured)
+- **G-code markers for custom G-code** (commit `ee474c462`): a pause with a message now has `;PAUSE_PRINT_MESSAGE:<message>` after `;PAUSE_PRINT` (before `M117 <message>` and `M601`, as in 2.9); custom G-code after `;CUSTOM_GCODE` is wrapped in `;CUSTOM_GCODE_START` / `;CUSTOM_GCODE_END`, and a template in `;CUSTOM_TEMPLATE_START` / `;CUSTOM_TEMPLATE_END` (names in `libpgcode/Types.hpp`). `gcode_info` reports the message, the custom block's lines and whether it is the template; from 2.9 the message comes from the `M117`, and custom blocks come without their lines, as nothing marks where they end. (measured)
+- **Mirroring in projects** (commit `c9e8ec08d`): a volume in `Metadata/PrusaSlicer3_project.json` may carry `"mirror": "xyz"` (the axes mirrored), to tell a mirrored object from a rotated one; the mesh and the transform stay the real geometry. A project with `"mirror": "x"` loaded and sliced; `edit_project` keeps it, as it rewrites only `config_containers`. (measured; source `PrusaFile.cpp`)
+- **A user preset whose parent does not exist** no longer aborts every CLI call (alpha14: exit 134). Alpha15 leaves that preset out and logs "Preset with id '…' not found", exit 0. `create_filament_preset` still finds it out (the preset does not resolve) and takes the file out again. (measured; commits `9b3e2ad0e`, `6b68866e3`)
+- **The preset updater behind a proxy** (alpha14 as well): with `HTTPS_PROXY` set to a proxy whose certificate PrusaSlicer's own curl does not trust, "Download of Sources Database Manifest has failed: … SSL peer certificate … was not OK". A fresh data directory then keeps the app's built-in `Resources/presets/RepositoryManifest.json`, which points at `http://localhost:8000/`, and `--preset-update-list` lists nothing, with warnings only. Without the proxy, alpha15 listed and installed 1.0.22 -> 1.0.25. (measured)
+
 ## Running it
 
-- **Location.** The app is `PrusaSlicer-3.0.0-alpha14.app`; auto-detection looks for `PrusaSlicer.app` and finds a 2.9 first. Set `PRUSASLICER_PATH` to the 3.0 app. (measured)
+- **Location.** The app is `PrusaSlicer-3.0.0-alpha15.app` (alpha14: `PrusaSlicer-3.0.0-alpha14.app`); auto-detection looks for `PrusaSlicer.app` and finds a 2.9 first. Set `PRUSASLICER_PATH` to the 3.0 app. (measured)
 - **Data directory.** `~/Library/Application Support/PrusaSlicer3-dev` for alphas and betas, `PrusaSlicer3` for releases. App config: `shared_runtime/PrusaSlicer.json`. (measured)
 - **Every CLI call writes `shared_runtime/log.txt` in the default data directory, even with `--datadir`**, because logging starts before the data directory is read (source `slic3r-shared/src/Slic3r/App/Init.cpp:69-74`; seen by two separate runs). Nothing else is written there by a CLI call.
 - **Clean stdout.** `SLIC3R_LOGLEVEL=1` in the environment; `--loglevel 1` still lets two `[info]` lines through before it takes effect. (measured)
 - **Exit codes mean little.** "All objects are outside of the print volume" and export errors exit 0. Success is the output file existing (or `Slicing result exported to …` on stdout). Exit 1 comes from a missing input, a bad `--load`, an unknown preset, or pending forced preset updates. (measured; source `ProcessActions.cpp:330-336, 915-917`)
-- **A missing parent preset crashes every call** with exit 134 (an assert). See Presets. (measured on a copy of the data directory)
+- **A missing parent preset crashed every call of alpha14** with exit 134 (an assert); alpha15 leaves the preset out with an error in the log. See Presets. (measured on a copy of the data directory)
 
 ## Settings
 
@@ -59,7 +69,7 @@ Paths in source references are relative to `src/` of that checkout. Where the se
 - **`; prusaslicer_json_config = begin … end`** holds the full JSON config with preset names and ids, and `; objects_info = {"objects":[{name, polygon}]}` follows it. Objects are also labelled with M486 / `EXCLUDE_OBJECT`. (measured; source `GCode.cpp:1491-1508`)
 - **Thumbnails** only when the single input is a 3MF that contains `Metadata/thumbnail.png`. That PNG is scaled to fill each size the printer asks for and cut to it (`resize_and_crop`), then written as the preset says (QOI, PNG); STL input gives none. Same as 2.9.7. (measured, also with `--load`; source `CLIRuntime.cpp:38-43`, `3mf.cpp:883-918`)
 - **Several input files give several G-code files,** one per input, unless `--merge` is given; `--merge` puts them on one plate (two cubes: 7.17 g against 3.61 g for one). 2.9.7 does the same without `--merge`, and crashes with it. (measured)
-- **Same print as 2.9.7.** A 3DBenchy on a CORE One with 0.15mm BALANCED and Prusament PLA: 11.12 g and 52m35s with 2.9.7, 11.13 g and 52m41s with alpha14, with 2649 and 2687 lifted moves. (measured; `test/integration-benchy.test.ts`)
+- **Same print as 2.9.7.** A 3DBenchy on a CORE One with 0.15mm BALANCED and Prusament PLA: 11.12 g and 52m35s with 2.9.7, 11.13 g and 52m41s with alpha14, with 2649 and 2687 lifted moves; 11.13 g and 52m37s with alpha15. (measured; `test/integration-benchy.test.ts`)
 - **Multi-bed projects: the CLI slices one bed and drops the others without a word.** Three cubes on three beds (exported by 3.0 itself with `--duplicate 3`) gave one cube's G-code, exit 0. Which bed: the one at the first position, also with the `beds` list in the project JSON reordered. (measured; source `ProcessActions.cpp:293-303`)
   - Bed positions are in `config_containers[i].beds` (`position_x`, `position_y`; the CORE One's at 0, 270, 540), each with its own `custom_gcode` (`{mode, gcodes: [{gcode: {type, print_z, extruder, color, extra}}]}`) and `wipe_tower` (`{x, y, rotation_angle}` or null). (measured; source `PrusaFile.cpp:1643-1680`)
   - Moving the objects of bed 2 onto bed 1 and back the other way, with the two beds' `custom_gcode` exchanged, made the CLI slice bed 2 with bed 2's pause. 3.0 applies each bed's own pauses, unlike 2.9.7's CLI (see the README). (measured)
@@ -97,7 +107,7 @@ Paths in source references are relative to `src/` of that checkout. Where the se
   - (measured on a copy of the data directory)
 - **Two hazards.**
   - An unknown variable in `condition` makes almost every printer of that vendor disappear (31 models to 2).
-  - A parent id that does not exist crashes every CLI call (exit 134).
+  - A parent id that does not exist crashes every CLI call of alpha14 (exit 134); alpha15 leaves that preset out and logs "Preset with id '…' not found".
   - Validate after writing, and roll back. (measured on a copy)
 - **When a new file is seen:** the CLI sees it on the next call. The GUI only at start: there is no file watcher. A preset written by the server showed in the GUI's filament list after a restart. (measured; source `DesktopApp.cpp:546-550`)
 - **No "installed" profiles.** Every vendor profile is available. `printer_favorite_presets` (printer model ids) and `material_favorite_presets` (evaluated material ids) only filter the GUI's lists. (source `BundleLoader.cpp:90-108`, `MaterialSelectionDialog.cpp:30-36`)

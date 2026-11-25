@@ -344,7 +344,7 @@ export function registerSlice(server: McpServer, { slicer, account }: ToolDeps):
       }
       if (result.postProcess) {
         messages.push(
-          `PrusaSlicer 3.0.0-alpha14's command line runs no post-processing script, so this server ran ${result.postProcess.scripts.length === 1 ? "it" : `all ${result.postProcess.scripts.length}`} as PrusaSlicer 2.9 does, after the thumbnails: ${result.postProcess.scripts.join("; ")}.`,
+          `PrusaSlicer ${info.help.version}'s command line runs no post-processing script, so this server ran ${result.postProcess.scripts.length === 1 ? "it" : `all ${result.postProcess.scripts.length}`} as PrusaSlicer 2.9 does, after the thumbnails: ${result.postProcess.scripts.join("; ")}.`,
         );
         if (result.postProcess.renameAsked) {
           messages.push(`A script asked for the output to be named "${result.postProcess.renameAsked}"; PrusaSlicer's command line does not rename, and neither does this server.`);

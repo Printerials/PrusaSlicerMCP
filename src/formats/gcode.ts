@@ -22,6 +22,11 @@ export interface GcodeReport {
     used_g: number[];
     total_g: number | null;
     total_cost: number | null;
+    /**
+     * The filament used plus each used filament's empty spool (filament_spool_weight), as PrusaSlicer's
+     * GUI shows it in brackets ("408,14 (686,14)"); null when no spool weight is set.
+     */
+    with_spool_g: number | null;
     wipe_tower_g: number | null;
     types: string[];
   };
@@ -109,6 +114,7 @@ function buildReport(format: "ascii" | "binary", size: number, generator: string
       used_g: nums("filament used [g]"),
       total_g: num(stats.get("total filament used [g]")) ?? sum(nums("filament used [g]")),
       total_cost: num(stats.get("total filament cost")) ?? sum(nums("filament cost")),
+      with_spool_g: withSpool(nums("filament used [g]"), config.get("filament_spool_weight")),
       wipe_tower_g: num(stats.get("total filament used for wipe tower [g]")),
       types: config.has("filament_type") ? splitList(config.get("filament_type")!) : [],
     },
@@ -123,6 +129,20 @@ function buildReport(format: "ascii" | "binary", size: number, generator: string
     objects: objectNames(stats.get("objects_info")),
     thumbnails: [],
   };
+}
+
+/** Each used filament's grams plus its spool's weight; null when no used filament has a spool weight. */
+export function withSpool(usedGrams: number[], spoolWeights: string | undefined): number | null {
+  const spools = spoolWeights === undefined ? [] : splitList(spoolWeights).map(Number);
+  let total = 0;
+  let anySpool = false;
+  usedGrams.forEach((grams, index) => {
+    if (!(grams > 0)) return;
+    const spool = spools[index] ?? spools[0] ?? 0;
+    if (Number.isFinite(spool) && spool > 0) anySpool = true;
+    total += grams + (Number.isFinite(spool) ? spool : 0);
+  });
+  return anySpool ? round(total, 2) : null;
 }
 
 function objectNames(objectsInfo: string | undefined): string[] {

@@ -12,6 +12,10 @@ import type { Thumbnail } from "./bgcode.ts";
  *   ; prusaslicer_config = begin / end          (2.x INI block)
  *   ; prusaslicer_json_config = begin / end     (3.0 JSON block)
  *   ; thumbnail[_PNG|_JPG|_QOI] begin WxH len / end
+ *   ;PAUSE_PRINT, then the message as M117 <text> before the M601 (2.x), and since 3.0.0-alpha15
+ *     also ;PAUSE_PRINT_MESSAGE:<text>
+ *   ;CUSTOM_GCODE before custom G-code or a template; since 3.0.0-alpha15 its lines are wrapped in
+ *     ;CUSTOM_GCODE_START / _END, or ;CUSTOM_TEMPLATE_START / _END (measured 2026-11-25)
  */
 
 export interface GcodeEvent {
@@ -20,6 +24,12 @@ export interface GcodeEvent {
   layer: number;
   z: number | null;
   line: number;
+  /** A pause's message, shown on the printer. */
+  message?: string;
+  /** A custom block's lines (3.0.0-alpha15 and later mark where they end), clipped. */
+  gcode?: string;
+  /** The custom block is the printer's template_custom_gcode. */
+  template?: boolean;
 }
 
 export interface AsciiAnalysis {
@@ -42,6 +52,7 @@ const MOVE = /^G[0-3](?:\s|$)/;
 const E_WORD = /\bE(-?\d*\.?\d+)/;
 const THUMB_BEGIN = /^; thumbnail(?:_(PNG|JPG|QOI))? begin (\d+)x(\d+) \d+/;
 const MAX_EVENTS = 500;
+const MAX_CUSTOM_TEXT = 400;
 
 export async function analyzeAsciiGcode(path: string): Promise<AsciiAnalysis> {
   const result: AsciiAnalysis = {
@@ -67,6 +78,11 @@ export async function analyzeAsciiGcode(path: string): Promise<AsciiAnalysis> {
   const heights = new Set<number>();
 
   let previousZ = 0;
+  // A pause under way: its message comes before the M601.
+  let pause: { message: string | null } | null = null;
+  // The custom block being read, while its lines are collected.
+  let custom: GcodeEvent | null = null;
+  let collecting = false;
   for await (const raw of readLines(path)) {
     result.lines++;
     const line = raw.trimEnd();
@@ -108,7 +124,35 @@ export async function analyzeAsciiGcode(path: string): Promise<AsciiAnalysis> {
       continue;
     }
 
+    if (collecting && custom) {
+      if (line === ";CUSTOM_GCODE_END" || line === ";CUSTOM_TEMPLATE_END") {
+        collecting = false;
+        custom = null;
+        continue;
+      }
+      // The lines stay G-code: they are counted below as any other.
+      if ((custom.gcode ?? "").length < MAX_CUSTOM_TEXT) custom.gcode = (custom.gcode ? `${custom.gcode}\n` : "") + line;
+    }
+
     if (line.startsWith(";")) {
+      if (line === ";PAUSE_PRINT") {
+        pause = { message: null };
+        continue;
+      }
+      if (line.startsWith(";PAUSE_PRINT_MESSAGE:")) {
+        if (pause) pause.message = line.slice(";PAUSE_PRINT_MESSAGE:".length);
+        continue;
+      }
+      if (line === ";CUSTOM_GCODE") {
+        custom = { kind: "custom", code: line, layer, z, line: result.lines };
+        pushEvent(result, custom);
+        continue;
+      }
+      if ((line === ";CUSTOM_GCODE_START" || line === ";CUSTOM_TEMPLATE_START") && custom && !collecting) {
+        collecting = true;
+        if (line === ";CUSTOM_TEMPLATE_START") custom.template = true;
+        continue;
+      }
       if (line === ";LAYER_CHANGE") {
         layer++;
         continue;
@@ -179,7 +223,11 @@ export async function analyzeAsciiGcode(path: string): Promise<AsciiAnalysis> {
       if (code === "M82" || code.startsWith("M82 ")) relativeE = false;
       else if (code === "M83" || code.startsWith("M83 ")) relativeE = true;
       else if (/^M600\b/.test(code)) pushEvent(result, { kind: "color_change", code: line, layer, z, line: result.lines });
-      else if (/^M(601|0|1|25)\b/.test(code)) pushEvent(result, { kind: "pause", code: line, layer, z, line: result.lines });
+      else if (/^M117\b/.test(code) && pause && pause.message === null) pause.message = line.replace(/^M117\s?/, "");
+      else if (/^M(601|0|1|25)\b/.test(code)) {
+        pushEvent(result, { kind: "pause", code: line, layer, z, line: result.lines, ...(pause?.message ? { message: pause.message } : {}) });
+        pause = null;
+      }
       continue;
     }
     if (first === 84 /* T */ && /^T\d+\b/.test(code) && layer > 0) {

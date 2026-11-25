@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { readGcode, durationSeconds } from "../../src/formats/gcode.ts";
+import { readGcode, durationSeconds, withSpool } from "../../src/formats/gcode.ts";
 import { parseHelp, parseHelpFff } from "../../src/formats/help.ts";
 import { parseInfo } from "../../src/formats/info.ts";
 import { parseCommentedConfig, parseIniConfig, parseIniSections, splitList, unescapeValue } from "../../src/formats/ini.ts";
@@ -99,6 +99,8 @@ test("ASCII G-code: summary, layers, features, config", async () => {
   assert.deepEqual(report.presets.filament, ["Prusament PLA @COREONE HF0.4"]);
   assert.ok(report.time.normal_seconds! > 0);
   assert.ok(report.filament.total_g! > 0);
+  // 0.18 g of Prusament PLA on its 278 g spool, as the GUI shows it in brackets.
+  assert.equal(report.filament.with_spool_g, 278.18);
   assert.equal(report.layers.count, 25);
   assert.equal(report.layers.max_z, 5);
   assert.deepEqual(report.layers.heights, [0.2]);
@@ -114,7 +116,20 @@ test("binary G-code: metadata and the same summary", async () => {
   assert.equal(report.printer_model, "COREONE");
   assert.equal(report.time.normal, ascii.time.normal);
   assert.equal(report.filament.total_g, ascii.filament.total_g);
+  assert.equal(report.filament.with_spool_g, ascii.filament.with_spool_g);
   assert.equal(report.presets.printer, "Prusa CORE One HF0.4 nozzle");
   assert.equal(config.get("layer_height"), "0.2");
   assert.equal(report.layers.max_z, 5);
+});
+
+test("withSpool: each used filament plus its spool, as the GUI's bracketed weight", () => {
+  // The 2.9.7 GUI showed bed 2 of a project as "408,14 (686,14)": Prusament PLA's spool is 278 g.
+  assert.equal(withSpool([408.14], "278"), 686.14);
+  // Two extruders, the second unused: its spool does not count.
+  assert.equal(withSpool([10, 0], "278,1000"), 288);
+  assert.equal(withSpool([10, 5], "278,200"), 493);
+  // No spool weight set: nothing to add.
+  assert.equal(withSpool([10], "0"), null);
+  assert.equal(withSpool([10], undefined), null);
+  assert.equal(withSpool([], "278"), null);
 });

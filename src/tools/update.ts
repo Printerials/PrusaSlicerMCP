@@ -23,6 +23,11 @@ import { json, tool, type ToolDeps } from "./common.ts";
  * - An error comes as {"error": "..."}.
  * - Slicing is refused while forced updates are pending ("Execution blocked: Pending forced preset
  *   reconfigurations", source ProcessActions.cpp); regular updates do not block it.
+ * - When PrusaSlicer cannot reach the repository it lists nothing and says so only in warnings
+ *   ("Failed to download Sources Database Manifest file.", "Failed to check updates for source
+ *   …"). Behind an HTTPS_PROXY whose certificate its own curl does not trust, a fresh data
+ *   directory also keeps the app's built-in source list, which points at localhost:8000 (measured
+ *   2026-11-25 with 3.0.0-alpha14 and alpha15; without the proxy, 1.0.22 -> 1.0.25 was listed).
  */
 const V3_LISTS = ["forced_updates", "forced_downgrades", "regular_updates", "new_vendors", "removals", "not_in_index"] as const;
 
@@ -69,6 +74,15 @@ export function registerUpdate(server: McpServer, { slicer }: ToolDeps): void {
       }
 
       const before = await v3List(slicer);
+      const unreachable = unreachableWarnings(before.warnings);
+      if (unreachable.length) {
+        const proxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+        const why =
+          `PrusaSlicer could not reach Prusa's preset repository, so nothing was checked: ${unreachable.join(" ")}` +
+          (proxy ? " This server runs with a proxy (HTTPS_PROXY/HTTP_PROXY), which PrusaSlicer's own HTTP client uses; it does not trust a proxy's own certificate." : "");
+        if (install) throw new Refusal(why);
+        return json({ version: info.help.version, up_to_date: null, checked: false, warnings: before.warnings, note: why });
+      }
       const pending = summarize(before);
       if (!install || pending.length === 0) {
         return json({
@@ -119,6 +133,13 @@ async function v3List(slicer: SlicerContext): Promise<{ result?: V3Lists; warnin
   if (!answer) throw new Refusal(describeFailure(run, "Checking for profile updates"));
   if (typeof answer.error === "string") throw new Refusal(`PrusaSlicer's updater could not check: ${answer.error}`);
   return answer as { result?: V3Lists; warnings?: unknown[] };
+}
+
+/** The texts of the updater's warnings that mean it could not ask the repository at all. */
+export function unreachableWarnings(warnings: unknown[] | undefined): string[] {
+  return (warnings ?? [])
+    .map((warning) => (typeof warning === "string" ? warning : String((warning as { text?: unknown })?.text ?? "")))
+    .filter((text) => /Failed to (download|check updates)/i.test(text));
 }
 
 /** The JSON object PrusaSlicer prints, after whatever log lines came first. */

@@ -478,6 +478,46 @@ describe("against the installed PrusaSlicer", { skip }, () => {
     assert.deepEqual(await colourChanges(first.data.output), [], "bed 2's colour change ended up on bed 1");
   });
 
+  test("a pause's message and custom G-code reach gcode_info", async (t) => {
+    if (!prints) return t.skip("no profiles");
+    const exported = await call("export_model", { inputs: [join(dir, "cube.stl")], format: "3mf", output: join(dir, "events-geometry.3mf") });
+    assert.equal(exported.isError, false, exported.text);
+    const { ZipReader } = await import("../src/formats/zip.ts");
+    const zip = await ZipReader.open(join(dir, "events-geometry.3mf"));
+    const files: Record<string, Buffer | string> = {};
+    for (const name of zip.entries.keys()) files[name] = (await zip.read(name))!;
+    await zip.close();
+    // At 5 mm a pause with a message, at 10 mm two lines of custom G-code, at 15 mm the printer's template.
+    const v3Project = files["Metadata/PrusaSlicer3_project.json"];
+    if (v3Project) {
+      const json = JSON.parse(v3Project.toString());
+      const code = (type: number, z: number, extra: string) => ({ gcode: { type, print_z: z, extruder: 1, color: "", extra } });
+      json.config_containers[0].beds[0].custom_gcode = { mode: 1, gcodes: [code(1, 5, "Swap the magnets"), code(4, 10, "M117 hello\nG4 S1"), code(3, 15, "")] };
+      files["Metadata/PrusaSlicer3_project.json"] = JSON.stringify(json);
+    } else {
+      files["Metadata/Slic3r_PE.config"] = [`; printer_settings_id = ${printer}`, `; print_settings_id = ${prints[0]}`, `; filament_settings_id = "${filament}"`, ""].join("\n");
+      files["Metadata/Prusa_Slicer_custom_gcode_per_print_z.xml"] =
+        '<?xml version="1.0" encoding="utf-8"?>\n<custom_gcodes_per_print_z bed_idx="0">' +
+        '<code print_z="5" type="1" extruder="1" color="" extra="Swap the magnets" gcode="M601"/>' +
+        '<code print_z="10" type="4" extruder="1" color="" extra="M117 hello&#10;G4 S1" gcode="M117 hello&#10;G4 S1"/>' +
+        '<code print_z="15" type="3" extruder="1" color="" extra="" gcode=""/>' +
+        '<mode value="SingleExtruder"/></custom_gcodes_per_print_z>\n';
+    }
+    await writeZip(join(dir, "events.3mf"), files);
+    const sliced = await call("slice", { inputs: [join(dir, "events.3mf")], printer, print: prints[0], filament, gcode_format: "ascii", output: join(dir, "events.gcode") });
+    assert.equal(sliced.isError, false, sliced.text);
+    const events = (await call("gcode_info", { path: join(dir, "events.gcode") })).data.events as Array<{ kind: string; z: number; message?: string; gcode?: string; template?: boolean }>;
+    const at = (z: number) => events.filter((event) => Math.abs(event.z - z) < 0.3);
+    assert.deepEqual(at(5).map((event) => [event.kind, event.message]), [["pause", "Swap the magnets"]]);
+    assert.deepEqual(at(10).filter((event) => event.kind === "custom").length, 1);
+    assert.deepEqual(at(15).filter((event) => event.kind === "custom").length, 1);
+    if (v3Project) {
+      // Since 3.0.0-alpha15 the custom lines are marked, so they come along.
+      assert.equal(at(10).find((event) => event.kind === "custom")!.gcode, "M117 hello\nG4 S1");
+      assert.equal(at(15).find((event) => event.kind === "custom")!.template, true);
+    }
+  });
+
   test("model_info and export_model", async () => {
     const info = await call("model_info", { inputs: [join(dir, "cube.stl")] });
     assert.deepEqual(info.data.models[0].size, [20, 20, 20]);
