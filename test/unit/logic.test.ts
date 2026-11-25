@@ -58,6 +58,9 @@ test("window title: project, unsaved changes, untitled", () => {
   assert.deepEqual(parseWindowTitle("*bracket - PrusaSlicer-2.9.7 gebaseerd op Slic3r"), { name: "bracket", modified: true });
   assert.deepEqual(parseWindowTitle("*Naamloos - PrusaSlicer-2.9.7 gebaseerd op Slic3r"), { name: null, modified: true });
   assert.deepEqual(parseWindowTitle("PrusaSlicer-2.9.7 based on Slic3r"), { name: null, modified: false });
+  assert.deepEqual(parseWindowTitle("* - PrusaSlicer-2.9.7 based on Slic3r"), { name: null, modified: true });
+  assert.deepEqual(parseWindowTitle("arm - left - PrusaSlicer-2.9.7 based on Slic3r"), { name: "arm - left", modified: false });
+  assert.deepEqual(parseWindowTitle("part.gcode - PrusaSlicer G-code Viewer-2.9.7"), { name: null, modified: false });
   assert.deepEqual(matchRecentProjects("bracket", ["/x/other.3mf", "/y/bracket.3mf", "/z/bracket.stl"]), ["/y/bracket.3mf", "/z/bracket.stl"]);
 });
 

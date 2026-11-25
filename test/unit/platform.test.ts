@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { isGuiCommandLine } from "../../src/gui/index.ts";
+import { decodeListing, mainWindow } from "../../src/gui/win32.ts";
 import { FLATPAK_ID, linuxConfigHome, locateFlatpak, sandboxDirectories, slicerCommand, type LocatedBinary } from "../../src/slicer/locate.ts";
 
 const flatpak: LocatedBinary = {
@@ -92,4 +93,20 @@ test("isGuiCommandLine: PrusaSlicer without an action is the GUI", () => {
   assert.equal(isGuiCommandLine(["prusa-slicer", "--gcodeviewer", "a.gcode"]), false);
   assert.equal(isGuiCommandLine(["bwrap", "--args", "36", "--", "prusa-slicer"]), false);
   assert.equal(isGuiCommandLine(["node", "/home/someone/PrusaSlicerMCP/src/index.ts"]), false);
+});
+
+test("Windows: the process listing survives non-ASCII titles, and the plater's window is the one shown", () => {
+  const listing = [
+    { pid: 10, hwnd: 0, title: "" },
+    { pid: 11, hwnd: 2002, title: "part.gcode - PrusaSlicer G-code Viewer-2.9.7" },
+    { pid: 12, hwnd: 3003, title: "*beugel-für - PrusaSlicer-2.9.7 basé sur Slic3r" },
+  ];
+  const stdout = `${Buffer.from(JSON.stringify(listing), "utf8").toString("base64")}\r\n`;
+  const windows = decodeListing(stdout);
+  assert.deepEqual(windows, listing);
+  assert.equal(mainWindow(windows)?.pid, 12);
+  assert.equal(mainWindow(windows.slice(0, 2))?.pid, 11, "without a plater, any window there is");
+  assert.equal(mainWindow(windows.slice(0, 1)), null, "a process without a window");
+  assert.deepEqual(decodeListing(""), []);
+  assert.deepEqual(decodeListing(Buffer.from(JSON.stringify(listing[2])).toString("base64")), [listing[2]], "a single object");
 });

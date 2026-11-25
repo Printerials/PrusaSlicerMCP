@@ -12,6 +12,7 @@ PrusaSlicer is the source of truth. Profiles, compatibility, inheritance, slicin
 - PrusaSlicer 2.9. It is found in `/Applications`, `/Applications/Original Prusa Drivers`, `~/Applications`, `Program Files\Prusa3D\PrusaSlicer`, on `PATH`, or on Linux as Flathub's Flatpak `com.prusa3d.PrusaSlicer` (see [Linux](#linux)). 3.0.0-alpha14 works with every tool, experimentally; point `PRUSASLICER_PATH` at it, see [PrusaSlicer 3.0](#prusaslicer-30).
 - For the GUI tools, macOS or Windows.
   - On macOS, the app that runs the server needs **Screen Recording** permission, for window titles and screenshots.
+  - On Windows they go through Windows PowerShell 5.1, which ships with Windows (`src/gui/win32.ts`). Its C# compiles against .NET Framework 4.8 at C# 5 and its scripts run up to the Win32 calls (checked in a .NET SDK container, 2026-11-25); not yet run on Windows itself.
   - It also needs **Files and Folders** permission to read from `~/Downloads`, `~/Documents` or `~/Desktop`.
 
 ## Install
@@ -219,7 +220,3 @@ The integration tests write only to a temporary directory and do not open anythi
 ## License
 
 AGPL-3.0-only, see [LICENSE](LICENSE). Copyright (C) 2026 Enkodo.
-
-## Credits
-
-The Windows window code is adapted from [PrusaMCP](https://github.com/Noosbai/PrusaMCP) by Noosbai (MIT).

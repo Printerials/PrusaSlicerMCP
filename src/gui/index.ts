@@ -195,16 +195,17 @@ export interface TitleInfo {
  *   "name - PrusaSlicer-2.9.7 based on Slic3r"
  *   "*name - PrusaSlicer-2.9.7 gebaseerd op Slic3r"   (modified)
  *   "PrusaSlicer-2.9.7 based on Slic3r"                (empty plater)
- * 3MF projects show without extension; an imported model may show with it.
+ * 3MF projects show without extension; an imported model may show with it. The name is everything
+ * before the " - " in front of "PrusaSlicer-<version>", so a name may hold " - " itself.
  */
+const PLATER_TITLE = /^(\*)?\s*(.*?)\s+-\s+PrusaSlicer-\d/;
+
 export function parseWindowTitle(title: string): TitleInfo {
-  const dash = title.indexOf(" - PrusaSlicer");
-  if (dash === -1) return { name: null, modified: false };
-  let name = title.slice(0, dash).trim();
-  const modified = name.startsWith("*");
-  if (modified) name = name.slice(1).trim();
-  if (!name || UNTITLED.test(name)) return { name: null, modified };
-  return { name, modified };
+  const match = PLATER_TITLE.exec(title);
+  if (!match) return { name: null, modified: false };
+  const modified = match[1] === "*";
+  const name = match[2]!;
+  return { name: name && !UNTITLED.test(name) ? name : null, modified };
 }
 
 /** Recent projects are full paths, so a name match needs no directory guessing. Most recent first. */
